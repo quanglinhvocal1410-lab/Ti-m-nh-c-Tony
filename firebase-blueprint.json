@@ -1,0 +1,53 @@
+{
+  "entities": {
+    "User": {
+      "title": "User",
+      "description": "User profile and role information",
+      "type": "object",
+      "properties": {
+        "email": { "type": "string", "format": "email" },
+        "role": { "type": "string", "enum": ["admin", "student"] },
+        "name": { "type": "string" }
+      },
+      "required": ["email", "role"]
+    },
+    "Student": {
+      "title": "Student",
+      "description": "Student details and attendance",
+      "type": "object",
+      "properties": {
+        "stt": { "type": "number" },
+        "studentCode": { "type": "string" },
+        "status": { "type": "string" },
+        "course": { "type": "string" },
+        "name": { "type": "string" },
+        "attendance": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "phone": { "type": "string" },
+        "voiceType": { "type": "string" },
+        "rank": { "type": "string" },
+        "range": { "type": "string" },
+        "className": { "type": "string" },
+        "startDate": { "type": "string" },
+        "birthYear": { "type": "string" },
+        "online": { "type": "boolean" },
+        "avatar": { "type": "string" },
+        "createdAt": { "type": "string" },
+        "updatedAt": { "type": "string" }
+      },
+      "required": ["name"]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": { "$ref": "#/entities/User" },
+      "description": "User accounts and roles"
+    },
+    "/students/{studentId}": {
+      "schema": { "$ref": "#/entities/Student" },
+      "description": "Student records"
+    }
+  }
+}

@@ -1,0 +1,165 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // ===============================================================
+    // Assumed Data Model
+    // ===============================================================
+    //
+    // Collection: users
+    // Document ID: {userId} (matches auth.uid)
+    // Fields:
+    //   - email: string (required, email format)
+    //   - role: string (required, 'admin' or 'student')
+    //   - name: string (optional)
+    //   - createdAt: string (optional, ISO date)
+    //
+    // Collection: students
+    // Document ID: {studentId}
+    // Fields:
+    //   - name: string (required)
+    //   - phone: string (optional)
+    //   - voiceType: string (optional)
+    //   - rank: string (optional)
+    //   - range: string (optional)
+    //   - className: string (optional)
+    //   - startDate: string (optional)
+    //   - birthYear: string (optional)
+    //   - avatar: string (optional)
+    //   - status: string (optional)
+    //   - online: boolean (optional)
+    //   - attendance: list of objects (optional)
+    //
+    // Collection: lessons
+    // Document ID: {lessonId}
+    // Fields:
+    //   - studentId: string (required)
+    //   - lessonPlanId: string (required)
+    //   - date: string (required)
+    //   - notes: string (optional)
+    //
+    // Collection: lessonPlans
+    // Document ID: {lessonPlanId}
+    // Fields:
+    //   - title: string (required)
+    //   - description: string (optional)
+    //   - duration: number (required)
+    //
+    // ===============================================================
+
+    // ===============================================================
+    // Helper Functions
+    // ===============================================================
+    
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    function isOwner(userId) {
+      return isAuthenticated() && request.auth.uid == userId;
+    }
+
+    function isAdmin() {
+      return isAuthenticated() && (
+        (exists(/databases/$(database)/documents/users/$(request.auth.uid)) &&
+        get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin') ||
+        (request.auth.token.email == "quanglinhvocal1410@gmail.com" && request.auth.token.email_verified == true)
+      );
+    }
+
+    function isValidEmail(email) {
+      return email is string && email.matches("^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\\.[a-zA-Z]{2,}$");
+    }
+
+    // ===============================================================
+    // Domain Validators
+    // ===============================================================
+
+    function isValidUser(data) {
+      return data.keys().hasAll(['email', 'role']) &&
+             isValidEmail(data.email) &&
+             data.role in ['admin', 'student'] &&
+             (!('name' in data) || (data.name is string && data.name.size() <= 100)) &&
+             (!('createdAt' in data) || data.createdAt is string);
+    }
+
+    function isValidStudent(data) {
+      return data.keys().hasAll(['name']) &&
+             data.name is string && data.name.size() > 0 && data.name.size() <= 100 &&
+             (!('stt' in data) || data.stt is number) &&
+             (!('studentCode' in data) || (data.studentCode is string && data.studentCode.size() <= 50)) &&
+             (!('course' in data) || (data.course is string && data.course.size() <= 100)) &&
+             (!('phone' in data) || (data.phone is string && data.phone.size() <= 20)) &&
+             (!('voiceType' in data) || (data.voiceType is string && data.voiceType.size() <= 50)) &&
+             (!('rank' in data) || (data.rank is string && data.rank.size() <= 50)) &&
+             (!('range' in data) || (data.range is string && data.range.size() <= 50)) &&
+             (!('className' in data) || (data.className is string && data.className.size() <= 100)) &&
+             (!('startDate' in data) || (data.startDate is string && data.startDate.size() <= 50)) &&
+             (!('birthYear' in data) || (data.birthYear is string && data.birthYear.size() <= 10)) &&
+             (!('avatar' in data) || (data.avatar is string && data.avatar.size() <= 1000)) &&
+             (!('status' in data) || (data.status is string && data.status.size() <= 50)) &&
+             (!('online' in data) || data.online is bool) &&
+             (!('attendance' in data) || data.attendance is list) &&
+             (!('createdAt' in data) || data.createdAt is string) &&
+             (!('updatedAt' in data) || data.updatedAt is string);
+    }
+
+    function isValidLesson(data) {
+      return data.keys().hasAll(['studentId', 'lessonPlanId', 'date']) &&
+             data.studentId is string && data.studentId.size() > 0 && data.studentId.size() <= 100 &&
+             data.lessonPlanId is string && data.lessonPlanId.size() > 0 && data.lessonPlanId.size() <= 100 &&
+             data.date is string && data.date.size() > 0 && data.date.size() <= 50 &&
+             (!('notes' in data) || (data.notes is string && data.notes.size() <= 2000));
+    }
+
+    function isValidLessonPlan(data) {
+      return data.keys().hasAll(['title', 'duration']) &&
+             data.title is string && data.title.size() > 0 && data.title.size() <= 200 &&
+             data.duration is number && data.duration > 0 &&
+             (!('description' in data) || (data.description is string && data.description.size() <= 5000));
+    }
+
+    // ===============================================================
+    // Rules
+    // ===============================================================
+
+    match /users/{userId} {
+      // Users can read their own profile, admins can read all
+      allow read: if isOwner(userId) || isAdmin();
+      
+      // Users can create their own profile on signup (defaulting to student role unless admin)
+      allow create: if isOwner(userId) && isValidUser(request.resource.data) && 
+                    (request.resource.data.role == 'student' || isAdmin());
+                    
+      // Users can update their own profile (but not change role), admins can update any
+      allow update: if (isOwner(userId) && isValidUser(request.resource.data) && request.resource.data.role == resource.data.role) || 
+                    (isAdmin() && isValidUser(request.resource.data));
+                    
+      allow delete: if isAdmin();
+    }
+
+    match /students/{studentId} {
+      // Admins can read all students. Students might need to read their own student record.
+      // For now, allowing authenticated users to read students for the list view.
+      allow read: if isAuthenticated();
+      
+      allow create: if isAdmin() && isValidStudent(request.resource.data);
+      allow update: if isAdmin() && isValidStudent(request.resource.data);
+      allow delete: if isAdmin();
+    }
+
+    match /lessons/{lessonId} {
+      allow read: if isAuthenticated();
+      allow create: if isAdmin() && isValidLesson(request.resource.data);
+      allow update: if isAdmin() && isValidLesson(request.resource.data);
+      allow delete: if isAdmin();
+    }
+
+    match /lessonPlans/{lessonPlanId} {
+      allow read: if isAuthenticated();
+      allow create: if isAdmin() && isValidLessonPlan(request.resource.data);
+      allow update: if isAdmin() && isValidLessonPlan(request.resource.data);
+      allow delete: if isAdmin();
+    }
+  }
+}

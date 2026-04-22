@@ -1,0 +1,7 @@
+{
+  "name": "Tony Tiệm Dạy Nhạc",
+  "description": "Ứng dụng quản lý lớp học thanh nhạc, học viên và giáo án",
+  "requestFramePermissions": [
+    "microphone"
+  ]
+}

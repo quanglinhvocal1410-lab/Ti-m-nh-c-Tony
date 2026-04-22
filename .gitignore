@@ -1,0 +1,16 @@
+node_modules/
+build/
+dist/
+coverage/
+.DS_Store
+*.log
+.env*
+!.env.example
+database.sqlite
+database.sqlite-journal
+
+# Google Drive Sync
+token.json
+antigravity_data/
+credentials.json
+uploads/
