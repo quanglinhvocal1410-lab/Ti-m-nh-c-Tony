@@ -5,9 +5,9 @@ import { v4 as uuidv4 } from 'uuid';
 const router = express.Router();
 
 // Get all lessons for a student
-router.get('/student/:studentId', (req, res) => {
+router.get('/student/:studentId', async (req, res) => {
   try {
-    const lessons = db.prepare('SELECT * FROM lessons WHERE studentId = ? ORDER BY date DESC').all(req.params.studentId);
+    const lessons = await db.prepare('SELECT * FROM lessons WHERE studentId = ? ORDER BY date DESC').all(req.params.studentId);
     res.json(lessons);
   } catch (error: any) {
     res.status(500).json({ error: error.message });
@@ -15,7 +15,7 @@ router.get('/student/:studentId', (req, res) => {
 });
 
 // Create a new lesson
-router.post('/', (req, res) => {
+router.post('/', async (req, res) => {
   try {
     const lesson = {
       _id: uuidv4(),
@@ -36,7 +36,7 @@ router.post('/', (req, res) => {
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
 
-    stmt.run(
+    await stmt.run(
       lesson._id,
       lesson.studentId,
       lesson.date,
@@ -75,7 +75,7 @@ router.post('/', (req, res) => {
 });
 
 // Update a lesson
-router.put('/:id', (req, res) => {
+router.put('/:id', async (req, res) => {
   try {
     const updates = req.body;
     updates.updatedAt = new Date().toISOString();
@@ -85,9 +85,9 @@ router.put('/:id', (req, res) => {
     const values = Object.values(updates);
 
     const stmt = db.prepare(`UPDATE lessons SET ${setClause} WHERE _id = ?`);
-    stmt.run(...values, req.params.id);
+    await stmt.run(...values, req.params.id);
 
-    const updatedLesson = db.prepare('SELECT * FROM lessons WHERE _id = ?').get(req.params.id);
+    const updatedLesson = await db.prepare('SELECT * FROM lessons WHERE _id = ?').get(req.params.id);
     res.json(updatedLesson);
   } catch (error: any) {
     res.status(500).json({ error: error.message });
@@ -95,9 +95,9 @@ router.put('/:id', (req, res) => {
 });
 
 // Delete a lesson
-router.delete('/:id', (req, res) => {
+router.delete('/:id', async (req, res) => {
   try {
-    db.prepare('DELETE FROM lessons WHERE _id = ?').run(req.params.id);
+    await db.prepare('DELETE FROM lessons WHERE _id = ?').run(req.params.id);
     res.status(204).send();
   } catch (error: any) {
     res.status(500).json({ error: error.message });

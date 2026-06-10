@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect } from 'react';
-import { ArrowLeft, Music, ChevronDown, PlayCircle, PauseCircle, Mic, MessageSquare, Video, ExternalLink, Trash2, StopCircle, CheckCircle2, Mic2, Wind, Activity, Clock, Star, ChevronRight, Info, Sparkles, Award, Target, TrendingUp } from 'lucide-react';
+import { ArrowLeft, Music, ChevronDown, PlayCircle, PauseCircle, Mic, MessageSquare, Video, ExternalLink, Trash2, StopCircle, CheckCircle2, Mic2, Wind, Activity, Clock, Star, ChevronRight, Info, Sparkles, Award, Target, TrendingUp, FileText } from 'lucide-react';
 import { studentService } from '../services/studentService';
 import { lessonService, Lesson, EvaluationCriterion } from '../services/lessonService';
 import { VOCAL_EVALUATION_CRITERIA } from '../utils/evaluationConstants';

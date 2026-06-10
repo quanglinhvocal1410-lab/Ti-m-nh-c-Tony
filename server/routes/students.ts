@@ -5,10 +5,11 @@ import { v4 as uuidv4 } from 'uuid';
 const router = express.Router();
 
 // Get all students
-router.get('/', (req, res) => {
+router.get('/', async (req, res) => {
   try {
     const stmt = db.prepare('SELECT * FROM students ORDER BY stt ASC');
-    const students = stmt.all().map((student: any) => ({
+    const rows = await stmt.all();
+    const students = rows.map((student: any) => ({
       ...student,
       attendance: student.attendance ? JSON.parse(student.attendance) : [],
       voiceTest: student.voiceTest ? JSON.parse(student.voiceTest) : null,
@@ -22,10 +23,10 @@ router.get('/', (req, res) => {
 });
 
 // Get student by ID
-router.get('/:id', (req, res) => {
+router.get('/:id', async (req, res) => {
   try {
     const stmt = db.prepare('SELECT * FROM students WHERE _id = ?');
-    const student = stmt.get(req.params.id) as any;
+    const student = await stmt.get(req.params.id) as any;
     if (!student) {
       return res.status(404).json({ error: 'Student not found' });
     }
@@ -42,7 +43,7 @@ router.get('/:id', (req, res) => {
 });
 
 // Create student
-router.post('/', (req, res) => {
+router.post('/', async (req, res) => {
   try {
     const id = uuidv4();
     const now = new Date().toISOString();
@@ -84,7 +85,7 @@ router.post('/', (req, res) => {
       updatedAt: now
     };
     
-    stmt.run(newStudent);
+    await stmt.run(newStudent);
     
     res.status(201).json({
       ...newStudent,
@@ -98,7 +99,7 @@ router.post('/', (req, res) => {
 });
 
 // Update student
-router.put('/:id', (req, res) => {
+router.put('/:id', async (req, res) => {
   try {
     const id = req.params.id;
     const now = new Date().toISOString();
@@ -106,7 +107,7 @@ router.put('/:id', (req, res) => {
     
     // First check if student exists
     const checkStmt = db.prepare('SELECT * FROM students WHERE _id = ?');
-    const existing = checkStmt.get(id) as any;
+    const existing = await checkStmt.get(id) as any;
     
     if (!existing) {
       return res.status(404).json({ error: 'Student not found' });
@@ -147,10 +148,10 @@ router.put('/:id', (req, res) => {
     updates.push('updatedAt = @updatedAt');
     
     const stmt = db.prepare(`UPDATE students SET ${updates.join(', ')} WHERE _id = @id`);
-    stmt.run(params);
+    await stmt.run(params);
     
     // Return updated student
-    const updatedStudent = checkStmt.get(id) as any;
+    const updatedStudent = await checkStmt.get(id) as any;
     res.json({
       ...updatedStudent,
       attendance: updatedStudent.attendance ? JSON.parse(updatedStudent.attendance) : [],
@@ -164,10 +165,10 @@ router.put('/:id', (req, res) => {
 });
 
 // Delete student
-router.delete('/:id', (req, res) => {
+router.delete('/:id', async (req, res) => {
   try {
     const stmt = db.prepare('DELETE FROM students WHERE _id = ?');
-    const result = stmt.run(req.params.id);
+    const result = await stmt.run(req.params.id);
     
     if (result.changes === 0) {
       return res.status(404).json({ error: 'Student not found' });
@@ -181,7 +182,7 @@ router.delete('/:id', (req, res) => {
 });
 
 // Delete multiple students
-router.post('/delete-multiple', (req, res) => {
+router.post('/delete-multiple', async (req, res) => {
   try {
     const { ids } = req.body;
     if (!Array.isArray(ids) || ids.length === 0) {
@@ -190,7 +191,7 @@ router.post('/delete-multiple', (req, res) => {
     
     const placeholders = ids.map(() => '?').join(',');
     const stmt = db.prepare(`DELETE FROM students WHERE _id IN (${placeholders})`);
-    stmt.run(...ids);
+    await stmt.run(...ids);
     
     res.json({ success: true, deletedCount: ids.length });
   } catch (error) {
@@ -200,10 +201,10 @@ router.post('/delete-multiple', (req, res) => {
 });
 
 // Delete all students
-router.delete('/', (req, res) => {
+router.delete('/', async (req, res) => {
   try {
     const stmt = db.prepare('DELETE FROM students');
-    stmt.run();
+    await stmt.run();
     res.json({ success: true });
   } catch (error) {
     console.error('Error deleting all students:', error);
