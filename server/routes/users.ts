@@ -44,4 +44,43 @@ router.post('/', async (req, res) => {
   }
 });
 
+// Get all users
+router.get('/', async (req, res) => {
+  try {
+    const stmt = db.prepare('SELECT * FROM users ORDER BY createdAt DESC');
+    const users = await stmt.all();
+    res.json(users);
+  } catch (error) {
+    console.error('Error fetching users:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// Update user role
+router.put('/:id/role', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { role } = req.body;
+    
+    if (!['student', 'teacher', 'admin'].includes(role)) {
+      return res.status(400).json({ error: 'Invalid role' });
+    }
+
+    const checkStmt = db.prepare('SELECT * FROM users WHERE _id = ?');
+    const existing = await checkStmt.get(id);
+
+    if (!existing) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+
+    const updateStmt = db.prepare('UPDATE users SET role = ? WHERE _id = ?');
+    await updateStmt.run(role, id);
+
+    res.json({ message: 'Role updated successfully', role });
+  } catch (error) {
+    console.error('Error updating user role:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
 export default router;

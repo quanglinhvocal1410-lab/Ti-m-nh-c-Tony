@@ -11,6 +11,7 @@ import LearningPathScreen from './components/LearningPathScreen';
 import StudentsListScreen from './components/StudentsListScreen';
 import LessonHistoryScreen from './components/LessonHistoryScreen';
 import AdminScreen from './components/AdminScreen';
+import LoginScreen from './components/LoginScreen';
 import { AuthProvider, useAuth } from './contexts/AuthContext';
 import { gasApi, isGAS } from './utils/apiBridge';
 
@@ -59,6 +60,11 @@ function MainApp() {
         <div className="animate-spin rounded-full h-12 w-12 border-4 border-white border-t-transparent"></div>
       </div>
     );
+  }
+
+  const { userEmail } = useAuth();
+  if (!userEmail) {
+    return <LoginScreen />;
   }
 
   return (
