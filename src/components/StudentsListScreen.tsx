@@ -5,6 +5,7 @@ import { auth } from '../firebase';
 import AddStudentModal from './AddStudentModal';
 import ConfirmModal from './ConfirmModal';
 import { studentService, MongoStudent } from '../services/studentService';
+import { useAuth } from '../contexts/AuthContext';
 
 export default function StudentsListScreen({ onNavigate }: { onNavigate: (screen: string, id?: string) => void }) {
   const [searchQuery, setSearchQuery] = useState('');
@@ -14,27 +15,11 @@ export default function StudentsListScreen({ onNavigate }: { onNavigate: (screen
   const [isDeleteSelectedModalOpen, setIsDeleteSelectedModalOpen] = useState(false);
   const [isSelectionMode, setIsSelectionMode] = useState(false);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
-  const [user, setUser] = useState<any>(null);
-  const [isAdmin, setIsAdmin] = useState(false);
+  const { userEmail, isAdmin } = useAuth();
   const [isLoading, setIsLoading] = useState(true);
   const timerRef = useRef<NodeJS.Timeout | null>(null);
 
   useEffect(() => {
-    const unsubscribeAuth = onAuthStateChanged(auth, (currentUser) => {
-      setUser(currentUser);
-      // Check if user is the teacher (admin)
-      setIsAdmin(currentUser?.email === 'quanglinhvocal1410@gmail.com');
-    });
-
-    return () => unsubscribeAuth();
-  }, []);
-
-  useEffect(() => {
-    if (!user) {
-      setStudents([]);
-      setIsLoading(false);
-      return;
-    }
 
     setIsLoading(true);
     const unsubscribeStudents = studentService.subscribeToStudents(
@@ -49,7 +34,7 @@ export default function StudentsListScreen({ onNavigate }: { onNavigate: (screen
     );
 
     return () => unsubscribeStudents();
-  }, [user]);
+  }, []);
 
   const handleLogin = async () => {
     try {
@@ -164,7 +149,7 @@ export default function StudentsListScreen({ onNavigate }: { onNavigate: (screen
               <>
                 <h1 className="text-2xl font-bold text-white">Quản lý Học viên</h1>
                 <div className="flex gap-2">
-                  {!user ? (
+                  {!userEmail ? (
                     <button onClick={handleLogin} className="bg-white/20 hover:bg-white/30 text-white px-3 py-2 rounded-xl transition-colors text-sm font-bold flex items-center gap-2">
                       <LogIn size={16} /> Đăng nhập
                     </button>
@@ -286,15 +271,17 @@ export default function StudentsListScreen({ onNavigate }: { onNavigate: (screen
                       </span>
                     </div>
                   </div>
-                  <button 
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      onNavigate('lesson', student._id);
-                    }}
-                    className="flex items-center gap-1.5 px-3 py-1.5 rounded-full text-[10px] font-bold uppercase tracking-wider bg-[#C5A059] text-white hover:bg-[#B38D46] transition-colors shadow-sm shrink-0"
-                  >
-                    <PlayCircle size={14} /> Hôm nay
-                  </button>
+                  {isAdmin && (
+                    <button 
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        onNavigate('lesson', student._id);
+                      }}
+                      className="flex items-center gap-1.5 px-3 py-1.5 rounded-full text-[10px] font-bold uppercase tracking-wider bg-[#C5A059] text-white hover:bg-[#B38D46] transition-colors shadow-sm shrink-0"
+                    >
+                      <PlayCircle size={14} /> Hôm nay
+                    </button>
+                  )}
                   <div className="shrink-0 text-slate-300 group-hover:text-[#C5A059] transition-colors">
                     <ChevronRight size={20} />
                   </div>
@@ -327,10 +314,12 @@ export default function StudentsListScreen({ onNavigate }: { onNavigate: (screen
               <Users size={24} />
               <p className="text-[10px] font-bold uppercase tracking-tight">Học viên</p>
             </button>
-            <button className="flex flex-col items-center gap-1 text-slate-400 hover:text-[#4E6B56] transition-colors px-4 py-2">
-              <Settings size={24} />
-              <p className="text-[10px] font-bold uppercase tracking-tight">Cài đặt</p>
-            </button>
+            {isAdmin && (
+              <button onClick={() => onNavigate('admin')} className="flex flex-col items-center gap-1 text-slate-400 hover:text-[#4E6B56] transition-colors px-4 py-2">
+                <Settings size={24} />
+                <p className="text-[10px] font-bold uppercase tracking-tight">Admin</p>
+              </button>
+            )}
           </div>
         </div>
       </div>

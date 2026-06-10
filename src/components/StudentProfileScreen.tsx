@@ -8,6 +8,7 @@ import AIEvaluationModal from './AIEvaluationModal';
 import LessonHistoryTab from './LessonHistoryTab';
 import { studentService, MongoStudent } from '../services/studentService';
 import { lessonService, Lesson } from '../services/lessonService';
+import { useAuth } from '../contexts/AuthContext';
 
 interface StudentProfileScreenProps {
   onNavigate: (screen: string, id?: string) => void;
@@ -22,17 +23,11 @@ export default function StudentProfileScreen({ onNavigate, studentId }: StudentP
   const [isDeleteModalOpen, setIsDeleteModalOpen] = useState(false);
   const [isEditModalOpen, setIsEditModalOpen] = useState(false);
   const [isAIModalOpen, setIsAIModalOpen] = useState(false);
-  const [isAdmin, setIsAdmin] = useState(false);
+  const { isAdmin } = useAuth();
   const [activeTab, setActiveTab] = useState<'overview' | 'songs' | 'history' | 'evaluation'>('overview');
   const [lessons, setLessons] = useState<Lesson[]>([]);
+  const [isLoadingLessons, setIsLoadingLessons] = useState(true);
   const [focusLessonId, setFocusLessonId] = useState<string | null>(null);
-
-  useEffect(() => {
-    const unsubscribeAuth = onAuthStateChanged(auth, (currentUser) => {
-      setIsAdmin(currentUser?.email === 'quanglinhvocal1410@gmail.com');
-    });
-    return () => unsubscribeAuth();
-  }, []);
 
   useEffect(() => {
     if (!studentId) {
@@ -53,27 +48,35 @@ export default function StudentProfileScreen({ onNavigate, studentId }: StudentP
       }
     );
 
-    // Tải danh sách bài học để lấy bài hát
-    const loadLessons = async () => {
-      try {
-        const data = await lessonService.getLessonsByStudent(studentId);
+    setIsLoadingLessons(true);
+    const unsubscribeLessons = lessonService.subscribeToLessons(
+      studentId,
+      (data) => {
         setLessons(data);
-      } catch (e) {
-        console.error(e);
+        setIsLoadingLessons(false);
+      },
+      (error) => {
+        console.error("Error fetching lessons:", error);
+        setIsLoadingLessons(false);
       }
-    };
-    loadLessons();
+    );
 
-    return () => unsubscribe();
+    return () => {
+      unsubscribe();
+      unsubscribeLessons();
+    };
   }, [studentId]);
   
   const loadLessonsCallback = async () => {
     if (!studentId) return;
     try {
+      setIsLoadingLessons(true);
       const data = await lessonService.getLessonsByStudent(studentId);
       setLessons(data);
     } catch (e) {
       console.error(e);
+    } finally {
+      setIsLoadingLessons(false);
     }
   };
 
@@ -347,7 +350,14 @@ export default function StudentProfileScreen({ onNavigate, studentId }: StudentP
           )}
 
           {activeTab === 'history' && (
-            <LessonHistoryTab student={student} isAdmin={isAdmin} focusLessonId={focusLessonId} onLessonsChange={loadLessonsCallback} />
+            <LessonHistoryTab 
+              student={student} 
+              isAdmin={isAdmin} 
+              focusLessonId={focusLessonId} 
+              lessons={lessons}
+              isLoadingLessons={isLoadingLessons}
+              onRefresh={loadLessonsCallback} 
+            />
           )}
 
           {activeTab === 'evaluation' && (
@@ -476,12 +486,17 @@ export default function StudentProfileScreen({ onNavigate, studentId }: StudentP
         </main>
 
         {/* Bottom Action */}
-        <footer className="fixed bottom-6 left-0 right-0 px-5 z-50">
-          <button className="w-full bg-[#A3B18A] text-[#3A5A42] font-bold py-4 rounded-2xl shadow-2xl flex items-center justify-center space-x-2 transition-transform active:scale-95">
-            <CalendarCheck size={20} />
-            <span>Xem lịch học hôm nay</span>
-          </button>
-        </footer>
+        {isAdmin && (
+          <footer className="fixed bottom-6 left-0 right-0 px-5 z-50">
+            <button 
+              onClick={() => onNavigate('lesson', studentId!)}
+              className="w-full bg-[#A3B18A] text-[#3A5A42] font-bold py-4 rounded-2xl shadow-2xl flex items-center justify-center space-x-2 transition-transform active:scale-95"
+            >
+              <CalendarCheck size={20} />
+              <span>Bắt đầu bài học hôm nay</span>
+            </button>
+          </footer>
+        )}
       </div>
 
       <ConfirmModal

@@ -27,28 +27,45 @@ export interface MongoStudent {
 const API_URL = '/api/students';
 import { gasApi, isGAS } from '../utils/apiBridge';
 
+let cachedStudents: MongoStudent[] | null = null;
+let lastFetchStudentsTime = 0;
+let fetchStudentsPromise: Promise<MongoStudent[]> | null = null;
+
 export const studentService = {
   subscribeToStudents(callback: (students: MongoStudent[]) => void, onError?: (error: any) => void) {
     let isSubscribed = true;
     
+    if (cachedStudents && isSubscribed) {
+      callback(cachedStudents);
+    }
+    
     const fetchStudents = async () => {
+      if (cachedStudents && Date.now() - lastFetchStudentsTime < 10000) return;
+
       try {
-        let students;
-        if (isGAS) {
-          students = await gasApi.call('getStudents');
-        } else {
-          const response = await fetch(API_URL);
-          if (!response.ok) throw new Error('Failed to fetch students');
-          students = await response.json();
+        if (!fetchStudentsPromise) {
+          fetchStudentsPromise = (async () => {
+            if (isGAS) return await gasApi.call('getStudents');
+            const response = await fetch(API_URL);
+            if (!response.ok) throw new Error('Failed to fetch students');
+            return await response.json();
+          })();
         }
+        
+        const students = await fetchStudentsPromise;
+        cachedStudents = students;
+        lastFetchStudentsTime = Date.now();
+        fetchStudentsPromise = null;
+
         if (isSubscribed) callback(students);
       } catch (error) {
+        fetchStudentsPromise = null;
         if (isSubscribed && onError) onError(error);
       }
     };
 
     fetchStudents();
-    const intervalId = setInterval(fetchStudents, 3000);
+    const intervalId = setInterval(fetchStudents, 30000); // 30s interval instead of 3s
 
     return () => {
       isSubscribed = false;
@@ -59,7 +76,14 @@ export const studentService = {
   subscribeToStudent(id: string, callback: (student: MongoStudent | null) => void, onError?: (error: any) => void) {
     let isSubscribed = true;
     
+    if (cachedStudents && isSubscribed) {
+      const cachedStudent = cachedStudents.find(s => s._id === id);
+      if (cachedStudent) callback(cachedStudent);
+    }
+    
     const fetchStudent = async () => {
+      if (cachedStudents && Date.now() - lastFetchStudentsTime < 10000) return;
+
       try {
         let student;
         if (isGAS) {
@@ -73,6 +97,13 @@ export const studentService = {
           if (!response.ok) throw new Error('Failed to fetch student');
           student = await response.json();
         }
+        
+        // Update local cache
+        if (cachedStudents) {
+          const index = cachedStudents.findIndex(s => s._id === id);
+          if (index !== -1) cachedStudents[index] = student;
+        }
+
         if (isSubscribed) callback(student);
       } catch (error) {
         if (isSubscribed && onError) onError(error);
@@ -80,7 +111,7 @@ export const studentService = {
     };
 
     fetchStudent();
-    const intervalId = setInterval(fetchStudent, 3000);
+    const intervalId = setInterval(fetchStudent, 30000); // 30s interval
 
     return () => {
       isSubscribed = false;
@@ -96,123 +127,96 @@ export const studentService = {
   },
 
   async getStudentById(id: string): Promise<MongoStudent> {
-    if (isGAS) return gasApi.call('getStudentById', id);
+    if (cachedStudents) {
+      const cached = cachedStudents.find(s => s._id === id);
+      if (cached) return cached;
+    }
+    if (isGAS) return await gasApi.call('getStudentById', id);
     const response = await fetch(`${API_URL}/${id}`);
     if (!response.ok) throw new Error('Failed to fetch student');
-    return response.json();
+    return await response.json();
   },
 
   async createStudent(student: Partial<MongoStudent>): Promise<MongoStudent> {
-    if (isGAS) return gasApi.call('createStudent', JSON.stringify(student));
-    const response = await fetch(API_URL, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(student)
-    });
-    
-    if (!response.ok) throw new Error('Failed to create student');
-    const newStudent = await response.json();
-
-    // Sync to Google Sheet
-    try {
-      await fetch('https://script.google.com/macros/s/AKfycbxMHK9VP_OpKbHPmEIYq_Y761dbqu5s0ZlEke9bXHyq-Xhb7RXogrlP-Aqa1IzzB2VV3A/exec', {
+    let result;
+    if (isGAS) {
+      result = await gasApi.call('createStudent', JSON.stringify(student));
+    } else {
+      const response = await fetch(API_URL, {
         method: 'POST',
-        headers: {
-          'Content-Type': 'text/plain;charset=utf-8',
-        },
-        body: JSON.stringify({
-          action: "create",
-          stt: student.stt || "",
-          studentCode: student.studentCode || "",
-          status: student.status || "Đang học",
-          course: student.course || student.className || "",
-          name: student.name || "",
-          phone: student.phone || "",
-          voiceType: student.voiceType || "",
-          rank: student.rank || "",
-          range: (student.lowestNote && student.highestNote) ? `${student.lowestNote} - ${student.highestNote}` : (student.lowestNote || student.highestNote || ""),
-          className: student.className || "",
-          birthYear: student.birthYear || ""
-        }),
-        redirect: 'follow'
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(student)
       });
-    } catch (sheetError) {
-      console.error("Error syncing to Google Sheet:", sheetError);
+      
+      if (!response.ok) throw new Error('Failed to create student');
+      result = await response.json();
     }
-
-    return newStudent;
+    
+    cachedStudents = null; // Invalidate cache
+    return result;
   },
 
   async updateStudent(
     id: string,
     student: Partial<MongoStudent>,
   ): Promise<MongoStudent> {
-    if (isGAS) return gasApi.call('updateStudent', id, JSON.stringify(student));
-    const response = await fetch(`${API_URL}/${id}`, {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(student)
-    });
-    
-    if (!response.ok) {
-      const errorData = await response.json().catch(() => ({}));
-      throw new Error(errorData.error || 'Failed to update student');
-    }
-    const updatedStudent = await response.json();
-
-    // Sync to Google Sheet
-    try {
-      await fetch('https://script.google.com/macros/s/AKfycbxMHK9VP_OpKbHPmEIYq_Y761dbqu5s0ZlEke9bXHyq-Xhb7RXogrlP-Aqa1IzzB2VV3A/exec', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'text/plain;charset=utf-8',
-        },
-        body: JSON.stringify({
-          action: "update",
-          id: id,
-          stt: updatedStudent.stt || "",
-          studentCode: updatedStudent.studentCode || "",
-          status: updatedStudent.status || "Đang học",
-          course: updatedStudent.course || updatedStudent.className || "",
-          name: updatedStudent.name || "",
-          phone: updatedStudent.phone || "",
-          voiceType: updatedStudent.voiceType || "",
-          rank: updatedStudent.rank || "",
-          range: (updatedStudent.lowestNote && updatedStudent.highestNote) ? `${updatedStudent.lowestNote} - ${updatedStudent.highestNote}` : (updatedStudent.lowestNote || updatedStudent.highestNote || ""),
-          className: updatedStudent.className || "",
-          birthYear: updatedStudent.birthYear || ""
-        }),
-        redirect: 'follow'
+    let updatedStudent;
+    if (isGAS) {
+      updatedStudent = await gasApi.call('updateStudent', id, JSON.stringify(student));
+    } else {
+      const response = await fetch(`${API_URL}/${id}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(student)
       });
-    } catch (sheetError) {
-      console.error("Error syncing update to Google Sheet:", sheetError);
+      
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({}));
+        throw new Error(errorData.error || 'Failed to update student');
+      }
+      updatedStudent = await response.json();
     }
-
+    
+    cachedStudents = null; // Invalidate cache
     return updatedStudent;
   },
 
   async deleteStudent(id: string): Promise<void> {
-    if (isGAS) return gasApi.call('deleteStudent', id);
-    const response = await fetch(`${API_URL}/${id}`, {
-      method: 'DELETE'
-    });
-    if (!response.ok) throw new Error('Failed to delete student');
+    if (isGAS) {
+      await gasApi.call('deleteStudent', id);
+    } else {
+      const response = await fetch(`${API_URL}/${id}`, {
+        method: 'DELETE'
+      });
+      if (!response.ok) throw new Error('Failed to delete student');
+    }
+    cachedStudents = null; // Invalidate cache
   },
 
   async deleteMultipleStudents(ids: string[]): Promise<void> {
-    const response = await fetch(`${API_URL}/delete-multiple`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ ids })
-    });
-    if (!response.ok) throw new Error('Failed to delete multiple students');
+    if (isGAS) {
+      await gasApi.call('deleteMultipleStudents', JSON.stringify(ids));
+    } else {
+      const response = await fetch(`${API_URL}/delete-multiple`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ids })
+      });
+      if (!response.ok) throw new Error('Failed to delete multiple students');
+    }
+    cachedStudents = null; // Invalidate cache
   },
 
   async deleteAllStudents(): Promise<void> {
-    const response = await fetch(API_URL, {
-      method: 'DELETE'
-    });
-    if (!response.ok) throw new Error('Failed to delete all students');
+    if (isGAS) {
+      await gasApi.call('deleteAllStudents');
+    } else {
+      const response = await fetch(API_URL, {
+        method: 'DELETE'
+      });
+      if (!response.ok) throw new Error('Failed to delete all students');
+    }
+    cachedStudents = null; // Invalidate cache
   },
 
   async syncFromGoogleSheet(): Promise<void> {

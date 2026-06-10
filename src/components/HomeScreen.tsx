@@ -1,29 +1,15 @@
 import { useState, useEffect } from 'react';
 import { Music, Search, MoreVertical, Activity, Users, User, Folder, PlusCircle, ChevronRight, GraduationCap, Calendar, Settings, X, PlayCircle } from 'lucide-react';
 import { studentService, MongoStudent } from '../services/studentService';
-import { auth } from '../firebase';
-import { onAuthStateChanged } from 'firebase/auth';
+import { useAuth } from '../contexts/AuthContext';
 
 export default function HomeScreen({ onNavigate }: { onNavigate: (screen: string, id?: string) => void }) {
   const [students, setStudents] = useState<MongoStudent[]>([]);
   const [allStudents, setAllStudents] = useState<MongoStudent[]>([]);
-  const [user, setUser] = useState<any>(null);
+  const { userEmail, isAdmin } = useAuth();
   const [selectedClassType, setSelectedClassType] = useState<'TNN' | 'TN11' | null>(null);
 
   useEffect(() => {
-    const unsubscribeAuth = onAuthStateChanged(auth, (currentUser) => {
-      setUser(currentUser);
-    });
-    return () => unsubscribeAuth();
-  }, []);
-
-  useEffect(() => {
-    if (!user) {
-      setStudents([]);
-      setAllStudents([]);
-      return;
-    }
-
     const unsubscribe = studentService.subscribeToStudents(
       (data) => {
         setAllStudents(data);
@@ -35,7 +21,7 @@ export default function HomeScreen({ onNavigate }: { onNavigate: (screen: string
     );
 
     return () => unsubscribe();
-  }, [user]);
+  }, []);
 
   const groupClassCount = allStudents.filter(s => s.course === 'TNN').length;
   const oneOnOneClassCount = allStudents.filter(s => s.course === 'TN11').length;
@@ -125,10 +111,12 @@ export default function HomeScreen({ onNavigate }: { onNavigate: (screen: string
           <section>
             <div className="flex items-center justify-between mb-4 px-1">
               <h3 className="text-lg font-bold text-white">Bài tập luyện thanh</h3>
-              <button className="text-[#C5A059] bg-[#F9FBF9]/20 hover:bg-[#F9FBF9]/30 px-3 py-1.5 rounded-full text-xs font-bold flex items-center gap-1.5 backdrop-blur-md transition-all">
-                <PlusCircle size={16} />
-                Thêm mới
-              </button>
+              {isAdmin && (
+                <button className="text-[#C5A059] bg-[#F9FBF9]/20 hover:bg-[#F9FBF9]/30 px-3 py-1.5 rounded-full text-xs font-bold flex items-center gap-1.5 backdrop-blur-md transition-all">
+                  <PlusCircle size={16} />
+                  Thêm mới
+                </button>
+              )}
             </div>
             <div className="space-y-3">
               {[
@@ -173,15 +161,17 @@ export default function HomeScreen({ onNavigate }: { onNavigate: (screen: string
                     <p className="text-xs text-slate-500 font-medium">{student.voiceType || 'Chưa phân loại giọng'} • {student.status || 'Đang học'}</p>
                   </div>
                   <div className="flex flex-col items-end gap-2">
-                    <button 
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        onNavigate('lesson', student._id);
-                      }}
-                      className="flex items-center gap-1.5 px-3 py-1.5 rounded-full text-[10px] font-bold uppercase tracking-wider bg-[#C5A059] text-white hover:bg-[#B38D46] transition-colors shadow-sm"
-                    >
-                      <PlayCircle size={14} /> Hôm nay
-                    </button>
+                    {isAdmin && (
+                      <button 
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          onNavigate('lesson', student._id);
+                        }}
+                        className="flex items-center gap-1.5 px-3 py-1.5 rounded-full text-[10px] font-bold uppercase tracking-wider bg-[#C5A059] text-white hover:bg-[#B38D46] transition-colors shadow-sm"
+                      >
+                        <PlayCircle size={14} /> Hôm nay
+                      </button>
+                    )}
                     <div className={`flex items-center gap-1.5 px-3 py-1 rounded-full text-[10px] font-bold uppercase tracking-wider ${student.online ? 'bg-green-50 text-green-700' : 'bg-slate-100 text-slate-500'}`}>
                       <span className={`size-1.5 rounded-full ${student.online ? 'bg-green-500 animate-pulse' : 'bg-slate-400'}`}></span> {student.online ? 'Online' : 'Offline'}
                     </div>
@@ -207,10 +197,12 @@ export default function HomeScreen({ onNavigate }: { onNavigate: (screen: string
               <Users size={24} />
               <p className="text-[10px] font-bold uppercase tracking-tight">Học viên</p>
             </button>
-            <button className="flex flex-col items-center gap-1 text-slate-400 hover:text-[#4E6B56] transition-colors px-4 py-2">
-              <Settings size={24} />
-              <p className="text-[10px] font-bold uppercase tracking-tight">Cài đặt</p>
-            </button>
+            {isAdmin && (
+              <button onClick={() => onNavigate('admin')} className="flex flex-col items-center gap-1 text-slate-400 hover:text-[#4E6B56] transition-colors px-4 py-2">
+                <Settings size={24} />
+                <p className="text-[10px] font-bold uppercase tracking-tight">Admin</p>
+              </button>
+            )}
           </div>
         </div>
       </div>
@@ -250,16 +242,18 @@ export default function HomeScreen({ onNavigate }: { onNavigate: (screen: string
                         <p className="font-bold text-slate-800 truncate">{student.name}</p>
                         <p className="text-[10px] text-slate-500 truncate">{student.status || 'Đang học'}</p>
                       </div>
-                      <button 
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          setSelectedClassType(null);
-                          onNavigate('lesson', student._id);
-                        }}
-                        className="flex items-center gap-1.5 px-3 py-1.5 rounded-full text-[10px] font-bold uppercase tracking-wider bg-[#C5A059] text-white hover:bg-[#B38D46] transition-colors shadow-sm"
-                      >
-                        <PlayCircle size={14} /> Hôm nay
-                      </button>
+                      {isAdmin && (
+                        <button 
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setSelectedClassType(null);
+                            onNavigate('lesson', student._id);
+                          }}
+                          className="flex items-center gap-1.5 px-3 py-1.5 rounded-full text-[10px] font-bold uppercase tracking-wider bg-[#C5A059] text-white hover:bg-[#B38D46] transition-colors shadow-sm"
+                        >
+                          <PlayCircle size={14} /> Hôm nay
+                        </button>
+                      )}
                       <ChevronRight size={16} className="text-slate-300 ml-1" />
                     </div>
                   ))}

@@ -1,21 +1,22 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Plus, Video, FileText, Youtube, Star, Target, Calendar, Trash2, Edit2, ChevronDown, ChevronUp, Activity, Music, X, CheckSquare, ListTodo, TrendingUp, Award, Sparkles, Upload, Play, Mic, Loader2, Square } from 'lucide-react';
+import { Plus, Video, FileText, Youtube, Star, Target, Calendar, Trash2, Edit2, ChevronDown, ChevronUp, Activity, Music, X, CheckSquare, ListTodo, TrendingUp, Award, Sparkles, Upload, Play, Mic, Loader2, Square, ExternalLink } from 'lucide-react';
 import axios from 'axios';
 import { lessonService, Lesson, EvaluationCriterion } from '../services/lessonService';
 import ConfirmModal from './ConfirmModal';
 import { MongoStudent } from '../services/studentService';
 import { Radar, RadarChart, PolarGrid, PolarAngleAxis, PolarRadiusAxis, ResponsiveContainer } from 'recharts';
+import { gasApi, isGAS } from '../utils/apiBridge';
 
 interface LessonHistoryTabProps {
   student: MongoStudent;
   isAdmin: boolean;
   focusLessonId?: string | null;
-  onLessonsChange?: () => void;
+  lessons: Lesson[];
+  isLoadingLessons: boolean;
+  onRefresh?: () => void;
 }
 
-export default function LessonHistoryTab({ student, isAdmin, focusLessonId, onLessonsChange }: LessonHistoryTabProps) {
-  const [lessons, setLessons] = useState<Lesson[]>([]);
-  const [isLoading, setIsLoading] = useState(true);
+export default function LessonHistoryTab({ student, isAdmin, focusLessonId, lessons, isLoadingLessons, onRefresh }: LessonHistoryTabProps) {
   const [expandedLesson, setExpandedLesson] = useState<string | null>(null);
   const [isDeleteModalOpen, setIsDeleteModalOpen] = useState(false);
   const [lessonToDelete, setLessonToDelete] = useState<string | null>(null);
@@ -23,36 +24,24 @@ export default function LessonHistoryTab({ student, isAdmin, focusLessonId, onLe
   const [isUploading, setIsUploading] = useState(false);
   const [recordingState, setRecordingState] = useState<'idle' | 'recording'>('idle');
   const [activeRecordingLessonId, setActiveRecordingLessonId] = useState<string | null>(null);
+  const [tempAudio, setTempAudio] = useState<{ blob: Blob, url: string, name: string } | null>(null);
+  const [driveUrl, setDriveUrl] = useState<string | null>(null);
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const audioChunksRef = useRef<Blob[]>([]);
 
   useEffect(() => {
-    fetchLessons();
-  }, [student._id]);
+    if (student && student.driveLink) {
+      setDriveUrl(student.driveLink);
+    } else {
+      setDriveUrl(null);
+    }
+  }, [student]);
 
   useEffect(() => {
     if (focusLessonId && lessons.length > 0) {
       setExpandedLesson(focusLessonId);
     }
   }, [focusLessonId, lessons.length]);
-
-  const fetchLessons = async () => {
-    try {
-      setIsLoading(true);
-      const data = await lessonService.getLessonsByStudent(student._id);
-      setLessons(data);
-      if (focusLessonId) {
-        setExpandedLesson(focusLessonId);
-      } else if (data.length > 0) {
-        setExpandedLesson(data[0]._id);
-      }
-      onLessonsChange?.();
-    } catch (error) {
-      console.error("Error fetching lessons:", error);
-    } finally {
-      setIsLoading(false);
-    }
-  };
 
   const startRecording = async (lessonId: string) => {
     try {
@@ -61,50 +50,21 @@ export default function LessonHistoryTab({ student, isAdmin, focusLessonId, onLe
       mediaRecorderRef.current = mediaRecorder;
       audioChunksRef.current = [];
       setActiveRecordingLessonId(lessonId);
+      setTempAudio(null);
 
       mediaRecorder.ondataavailable = (e) => {
         if (e.data.size > 0) audioChunksRef.current.push(e.data);
       };
 
-      mediaRecorder.onstop = async () => {
+      mediaRecorder.onstop = () => {
         const audioBlob = new Blob(audioChunksRef.current, { type: 'audio/webm' });
-        const dummyFile = new File([audioBlob], `Luyen_Tap_${new Date().getTime()}.webm`, { type: 'audio/webm' });
-        
-        const formData = new FormData();
-        formData.append('audio', dummyFile);
-        formData.append('studentName', student.name);
-
-        try {
-          setIsUploading(true);
-          const res = await axios.post('/api/audio/upload', formData, {
-            headers: { 'Content-Type': 'multipart/form-data' }
-          });
-          if (res.data && res.data.fileUrl) {
-            const newAudio = { name: dummyFile.name, url: res.data.fileUrl };
-            const targetLesson = lessons.find(l => l._id === lessonId);
-            if (targetLesson) {
-              const currentAudios = targetLesson.audios ? (typeof targetLesson.audios === 'string' ? JSON.parse(targetLesson.audios) : targetLesson.audios) : [];
-              const updatedAudios = [...currentAudios, newAudio];
-              
-              await axios.put(`/api/lessons/${lessonId}`, {
-                audios: JSON.stringify(updatedAudios)
-              });
-              
-              setLessons(lessons.map(l => l._id === lessonId ? { ...l, audios: updatedAudios } : l));
-              alert('Ghi âm và lưu thành công!');
-            }
-          }
-        } catch (error) {
-          console.error("Lỗi upload ghi âm trực tiếp:", error);
-          alert('Tải bản ghi âm trực tiếp thất bại. Vui lòng kiểm tra lại quyền truy cập hoặc cấu hình backend.');
-        } finally {
-          setIsUploading(false);
-          setRecordingState('idle');
-          setActiveRecordingLessonId(null);
-        }
+        const name = `Luyen_Tap_${new Date().getTime()}.webm`;
+        const url = URL.createObjectURL(audioBlob);
+        setTempAudio({ blob: audioBlob, url, name });
+        setRecordingState('idle');
       };
 
-      mediaRecorder.start();
+      mediaRecorder.start(1000); // Send data every 1 second
       setRecordingState('recording');
     } catch (err) {
       console.error("Lỗi mic:", err);
@@ -121,19 +81,77 @@ export default function LessonHistoryTab({ student, isAdmin, focusLessonId, onLe
     }
   };
 
+  const handleCancelRecording = () => {
+    setTempAudio(null);
+    setActiveRecordingLessonId(null);
+  };
+
+  const handleSaveRecording = async (lessonId: string) => {
+    if (!tempAudio) return;
+    setIsUploading(true);
+    try {
+      const reader = new FileReader();
+      reader.readAsDataURL(tempAudio.blob);
+      reader.onloadend = async () => {
+        const base64Data = reader.result as string;
+        const dateStr = new Date().toLocaleDateString('vi-VN').replace(/\//g, '-');
+        const targetLesson = lessons.find(l => l._id === lessonId);
+        const songName = targetLesson?.bai_hat_luyen || 'Chua_Cap_Nhat_Bai_Hat';
+        const formattedFileName = `[${dateStr}].${songName}. [${student.name}].webm`;
+
+        let resData;
+        if (isGAS) {
+          resData = await gasApi.call('uploadAudio', base64Data, formattedFileName, student.name, student.driveLink);
+        } else {
+          const formData = new FormData();
+          const dummyFile = new File([tempAudio.blob], formattedFileName, { type: 'audio/webm' });
+          formData.append('audio', dummyFile);
+          formData.append('studentName', student.name);
+          formData.append('driveLink', student.driveLink || '');
+          const res = await axios.post('/api/audio/upload', formData, {
+            headers: { 'Content-Type': 'multipart/form-data' }
+          });
+          resData = res.data;
+        }
+
+        if (resData && resData.fileUrl) {
+          const newAudio = { name: formattedFileName, url: resData.fileUrl };
+          const targetLesson = lessons.find(l => l._id === lessonId);
+          if (targetLesson) {
+            const currentAudios = targetLesson.audios ? (typeof targetLesson.audios === 'string' ? JSON.parse(targetLesson.audios) : targetLesson.audios) : [];
+            const updatedAudios = [...currentAudios, newAudio];
+            
+            await lessonService.updateLesson(lessonId, { audios: JSON.stringify(updatedAudios) });
+            
+            if (resData.folderUrl) setDriveUrl(resData.folderUrl);
+            onRefresh?.();
+            alert('Lưu ghi âm thành công!');
+          }
+        }
+        setTempAudio(null);
+        setActiveRecordingLessonId(null);
+        setIsUploading(false);
+      };
+    } catch (error) {
+      console.error("Lỗi upload ghi âm:", error);
+      alert('Tải bản ghi âm thất bại.');
+      setIsUploading(false);
+    }
+  };
+
   const handleDelete = async () => {
     if (!lessonToDelete) return;
     try {
       await lessonService.deleteLesson(lessonToDelete);
       setIsDeleteModalOpen(false);
       setLessonToDelete(null);
-      fetchLessons();
+      onRefresh?.();
     } catch (error) {
       console.error("Error deleting lesson:", error);
     }
   };
 
-  if (isLoading) {
+  if (isLoadingLessons) {
     return <div className="flex justify-center py-10"><div className="animate-spin rounded-full h-8 w-8 border-2 border-white border-t-transparent"></div></div>;
   }
 
@@ -141,6 +159,11 @@ export default function LessonHistoryTab({ student, isAdmin, focusLessonId, onLe
     <div className="space-y-6">
       <div className="flex justify-between items-center">
         <h3 className="text-sm font-semibold uppercase tracking-wider text-[#A3B18A]">Lịch sử buổi học</h3>
+        {driveUrl && (
+          <a href={driveUrl} target="_blank" rel="noreferrer" className="text-xs font-bold text-teal-700 hover:text-teal-900 flex items-center gap-1.5 border border-teal-200 bg-teal-50 px-3 py-2 rounded-xl transition-colors shadow-sm">
+            <ExternalLink size={14} /> Đi đến Drive của bạn
+          </a>
+        )}
       </div>
 
       {/* DANH SÁCH LỊCH SỬ BUỔI HỌC (Thu gọn) */}
@@ -169,7 +192,14 @@ export default function LessonHistoryTab({ student, isAdmin, focusLessonId, onLe
                   <span className="text-xl font-black leading-none">{lesson.so_buoi || (lessons.length - index)}</span>
                 </div>
                 <div>
-                  <h4 className="font-bold text-slate-900 text-lg">Ngày {new Date(lesson.date).toLocaleDateString('vi-VN')}</h4>
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <h4 className="font-bold text-slate-900 text-lg">Ngày {new Date(lesson.date).toLocaleDateString('vi-VN')}</h4>
+                    {lesson.bai_hat_luyen && lesson.bai_hat_luyen.toLowerCase() !== 'chưa giao' && (
+                      <span className="text-sm font-semibold text-[#3A5A42] bg-[#A3B18A]/20 px-2 py-0.5 rounded-full flex items-center gap-1">
+                        <Music size={12} /> {lesson.bai_hat_luyen}
+                      </span>
+                    )}
+                  </div>
                   <div className="flex items-center gap-3 mt-1">
                     <div className="flex font-bold text-sm items-center gap-1">
                       <Award size={14} className={lesson.diem_trung_binh && lesson.diem_trung_binh >= 4 ? "text-yellow-500" : "text-slate-400"} /> 
@@ -234,14 +264,18 @@ export default function LessonHistoryTab({ student, isAdmin, focusLessonId, onLe
                     </div>
 
                     {/* Đánh giá & Ghi chú */}
-                    <div className="p-4 bg-indigo-50/50 rounded-2xl border border-indigo-100">
-                       <h6 className="font-bold text-sm mb-2 text-indigo-800 flex items-center gap-2"><Award size={16}/> Điểm mạnh</h6>
-                       <p className="text-sm text-slate-700">{lesson.diem_manh || "Không có ghi chú"}</p>
-                    </div>
-                    <div className="p-4 bg-red-50/50 rounded-2xl border border-red-100">
-                       <h6 className="font-bold text-sm mb-2 text-red-800 flex items-center gap-2"><Target size={16}/> Điểm yếu</h6>
-                       <p className="text-sm text-slate-700">{lesson.diem_yeu || "Không có ghi chú"}</p>
-                    </div>
+                    {(lesson.teacherNotes || lesson.diem_manh || lesson.diem_yeu) && (
+                      <div className="p-4 bg-indigo-50/50 rounded-2xl border border-indigo-100 col-span-1 md:col-span-2">
+                         <h6 className="font-bold text-sm mb-2 text-indigo-800 flex items-center gap-2"><FileText size={16}/> Ghi chú của giáo viên</h6>
+                         <p className="text-sm text-slate-700 whitespace-pre-line">
+                           {lesson.teacherNotes || 
+                            [
+                              lesson.diem_manh ? `Điểm mạnh: ${lesson.diem_manh}` : '',
+                              lesson.diem_yeu ? `Điểm yếu: ${lesson.diem_yeu}` : ''
+                            ].filter(Boolean).join('\n') || "Không có ghi chú"}
+                         </p>
+                      </div>
+                    )}
 
                     {lesson.ghi_chu_ky_thuat && (
                       <div className="p-4 bg-blue-50/50 rounded-2xl border border-blue-100 col-span-1 md:col-span-2">
@@ -296,20 +330,49 @@ export default function LessonHistoryTab({ student, isAdmin, focusLessonId, onLe
 
                  {/* Ghi Âm Section */}
                  <div className="mt-4 p-4 border border-emerald-100 rounded-2xl bg-emerald-50/30">
-                   <div className="flex items-center justify-between mb-3 border-b border-emerald-200/50 pb-2">
-                     <h6 className="font-bold text-sm text-emerald-800 flex items-center gap-2"><Mic size={14}/> File Ghi Âm</h6>
+                   <div className="flex flex-col sm:flex-row sm:items-center justify-between mb-3 border-b border-emerald-200/50 pb-2 gap-2">
+                     <h6 className="font-bold text-sm text-emerald-800 flex items-center gap-2">
+                       <Mic size={14}/> File Ghi Âm
+                       {driveUrl && (
+                         <a href={driveUrl} target="_blank" rel="noreferrer" className="text-xs text-blue-600 hover:text-blue-800 underline ml-2 font-normal">
+                           (Đi đến Drive của bạn)
+                         </a>
+                       )}
+                     </h6>
                      <div className="flex gap-2">
-                       {recordingState === 'idle' || activeRecordingLessonId !== lesson._id ? (
-                         <button onClick={(e) => { e.stopPropagation(); startRecording(lesson._id!); }} disabled={isUploading && activeRecordingLessonId === lesson._id} className="text-xs font-semibold bg-emerald-600 text-white px-3 py-1.5 rounded-lg flex items-center gap-1 hover:bg-emerald-700 transition disabled:opacity-50 disabled:cursor-wait">
-                           <Mic size={12}/> {(isUploading && activeRecordingLessonId === lesson._id) ? 'Đang Lưu...' : 'Thu Âm Trực Tiếp'}
-                         </button>
-                       ) : (
-                         <button onClick={(e) => { e.stopPropagation(); stopRecording(); }} className="text-xs font-semibold bg-red-500 text-white px-4 py-1.5 rounded-lg flex items-center gap-2 animate-pulse border border-red-300 shadow-md">
-                           <Square size={12} fill="currentColor"/> Dừng Thu Âm
-                         </button>
+                       {isAdmin && (
+                         recordingState === 'idle' || activeRecordingLessonId !== lesson._id ? (
+                           <button onClick={(e) => { e.stopPropagation(); startRecording(lesson._id!); }} disabled={(isUploading && activeRecordingLessonId === lesson._id) || (tempAudio !== null && activeRecordingLessonId === lesson._id)} className="text-xs font-semibold bg-emerald-600 text-white px-3 py-1.5 rounded-lg flex items-center gap-1 hover:bg-emerald-700 transition disabled:opacity-50 disabled:cursor-not-allowed">
+                             <Mic size={12}/> Thu Âm Trực Tiếp
+                           </button>
+                         ) : (
+                           <button onClick={(e) => { e.stopPropagation(); stopRecording(); }} className="text-xs font-semibold bg-red-500 text-white px-4 py-1.5 rounded-lg flex items-center gap-2 animate-pulse border border-red-300 shadow-md">
+                             <Square size={12} fill="currentColor"/> Dừng Thu Âm
+                           </button>
+                         )
                        )}
                      </div>
                    </div>
+
+                   {tempAudio && activeRecordingLessonId === lesson._id && (
+                     <div className="mb-4 p-3 bg-white border border-emerald-200 rounded-xl flex flex-col gap-3 shadow-sm">
+                       <div className="flex items-center gap-2 text-sm font-semibold text-slate-700">
+                         <span className="relative flex h-3 w-3">
+                           <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
+                           <span className="relative inline-flex rounded-full h-3 w-3 bg-emerald-500"></span>
+                         </span>
+                         Bản thu âm nháp (Chưa lưu)
+                       </div>
+                       <audio src={tempAudio.url} controls className="w-full h-10" />
+                       <div className="flex justify-end gap-2 mt-1">
+                         <button onClick={handleCancelRecording} className="text-xs font-medium px-4 py-1.5 border border-slate-300 text-slate-600 rounded-lg hover:bg-slate-50 transition">Xóa</button>
+                         <button onClick={() => handleSaveRecording(lesson._id!)} disabled={isUploading} className="text-xs font-semibold bg-emerald-600 text-white px-4 py-1.5 rounded-lg hover:bg-emerald-700 transition flex items-center gap-1 disabled:opacity-70">
+                           {isUploading ? <Loader2 size={14} className="animate-spin" /> : <Upload size={14} />} {isUploading ? 'Đang lưu...' : 'Lưu lên Drive'}
+                         </button>
+                       </div>
+                     </div>
+                   )}
+
                    {lessonAudios.length > 0 ? (
                      <div className="space-y-2">
                        {lessonAudios.map((au, idx) => (
