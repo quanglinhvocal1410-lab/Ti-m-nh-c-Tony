@@ -1,7 +1,5 @@
 import { GoogleGenAI, Type } from "@google/genai";
 
-const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
-
 export interface VoiceTestInput {
   student_info: {
     name: string;
@@ -38,6 +36,12 @@ export interface VoiceTestOutput extends VoiceTestInput {
 
 export const aiService = {
   async evaluateVoiceTest(input: VoiceTestInput): Promise<VoiceTestOutput> {
+    const apiKey = process.env.GEMINI_API_KEY;
+    if (!apiKey) {
+      throw new Error("Missing Gemini API Key. Vui lòng cấu hình biến môi trường GEMINI_API_KEY.");
+    }
+    const ai = new GoogleGenAI({ apiKey });
+
     const prompt = `Bạn là giáo viên thanh nhạc chuyên nghiệp, có nhiệm vụ đánh giá học viên mới dựa trên dữ liệu test giọng.
 
 Yêu cầu:
