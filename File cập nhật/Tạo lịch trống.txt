@@ -1,0 +1,81 @@
+function tongHopLichTrongNangCao() {
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  var sheet = ss.getSheetByName("XẾP LỊCH");
+  
+  if (!sheet) {
+    SpreadsheetApp.getUi().alert("Không tìm thấy trang tính có tên 'XẾP LỊCH'!");
+    return;
+  }
+  
+  // Lấy danh sách Địa điểm từ cột A (A3:A21)
+  var locations = sheet.getRange("A3:A21").getValues().map(function(row) { return row[0]; });
+  
+  // Lấy danh sách Thứ từ C2:I2
+  var days = sheet.getRange("C2:I2").getValues()[0];
+  
+  // Lấy danh sách Giờ từ cột B (B3:B13)
+  var times = sheet.getRange("B3:B21").getValues().map(function(row) { return row[0]; });
+  
+  // Lấy dữ liệu phân công từ vùng C3:I13
+  var data = sheet.getRange("C3:I21").getValues();
+  
+  var teachers = {};
+  
+  // Duyệt qua từng cột (ngày) và dòng (khung giờ)
+  for (var col = 0; col < data[0].length; col++) {
+    var day = days[col];
+    for (var row = 0; row < data.length; row++) {
+      var val = data[row][col];
+      var timeSlot = times[row];
+      var location = locations[row]; 
+      
+      if (val && val !== "-" && val.toString().indexOf("trống") !== -1) {
+        // Lấy đúng nguyên văn tên trong ô (ví dụ: "Quân trống")
+        var teacherName = val.toString().trim();
+        
+        if (!teachers[teacherName]) {
+          teachers[teacherName] = {};
+        }
+        if (!teachers[teacherName][day]) {
+          teachers[teacherName][day] = [];
+        }
+        
+        // Ghép giờ học và địa điểm học
+        var slotWithLocation = timeSlot;
+        if (location && location.toString().trim() !== "") {
+          slotWithLocation += " (" + location + ")";
+        }
+        
+        teachers[teacherName][day].push(slotWithLocation);
+      }
+    }
+  }
+  
+  // Tạo chuỗi kết quả dạng HTML
+  var htmlContent = '<div style="font-family: Arial, sans-serif; font-size: 14px; line-height: 1.6; padding: 10px;">';
+  htmlContent += '<strong style="font-size: 18px;">LỊCH TRONG TUẦN</strong><br><br>';
+  
+  for (var teacher in teachers) {
+    // Hiển thị tên (VD: Quân trống:)
+    htmlContent += '<strong style="font-size: 16px; color: #1a73e8;">' + teacher + ':</strong><br>';
+    
+    for (var i = 0; i < days.length; i++) {
+      var d = days[i];
+      if (teachers[teacher][d] && teachers[teacher][d].length > 0) {
+        htmlContent += d + ':<br>';
+        teachers[teacher][d].forEach(function(slot) {
+          // Hiển thị dấu + trước giờ và địa điểm
+          htmlContent += '&nbsp;&nbsp;+ ' + slot + '<br>';
+        });
+      }
+    }
+    htmlContent += '<br>';
+  }
+  htmlContent += '</div>';
+  
+  // Hiển thị hộp thoại kết quả
+  var htmlOutput = HtmlService.createHtmlOutput(htmlContent)
+      .setWidth(450)
+      .setHeight(450);
+  SpreadsheetApp.getUi().showModalDialog(htmlOutput, "Kết quả tổng hợp lịch trống");
+}

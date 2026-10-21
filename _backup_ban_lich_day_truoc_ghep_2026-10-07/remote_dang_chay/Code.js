@@ -1,0 +1,1381 @@
+/**********************************************************************
+ * TONY MUSIC ACADEMY — Quản lý học viên thanh nhạc & Đào tạo chuyên sâu
+ * Backend: Google Apps Script + Google Sheets + Google Drive + Gemini AI
+ **********************************************************************/
+
+// ===================== CẤU HÌNH & HẰNG SỐ =====================
+const APP_NAME = 'Tony Music Academy';
+const PROP     = PropertiesService.getScriptProperties();
+
+// Tên các bảng (Sheet) trong DB
+const T = {
+  HocVien:      'HocVien',
+  BuoiHoc:      'BuoiHoc',
+  DanhGiaGiong: 'DanhGiaGiong',
+  PhanTichBai:  'PhanTichBai',
+  Users:        'Users',
+  Settings:     'Settings'
+};
+
+// Cột (header) cho từng bảng — DAO map theo TÊN cột
+const SCHEMA = {
+  HocVien: [
+    'id', 'avatar', 'hoTen', 'namSinh', 'username', 'password', 'dienThoai', 'email',
+    'loaiGiong', 'lop', 'rank', 'tinhTrang', 'giaoVien', 'ngayBatDau', 'ngayKhoaMoi',
+    'soBuoiDeal', 'soBuoiKhoa', 'soBuoiDaHoc', 'soBuoiConLai',
+    'loaiHocVien', 'hocPhi', 'daDongHocPhi', 'tienMatDaThu',
+    'quangGiong', 'noteThap', 'noteCao', 'noteChuyenGiong',
+    'chestVoice', 'mixVoice', 'falsetto', 'headVoice', 'whistleVoice',
+    'mucTieu', 'diemManh', 'diemYeu', 'keHoach', 'khuyenNghi',
+    'linkDrive', 'ghiChu', 'active', 'createdAt', 'updatedAt',
+    'ngayHocThu', 'nguonGioiThieu', 'trialStatus'
+  ],
+  BuoiHoc: [
+    'id', 'hocVienId', 'ngayHoc', 'buoiSo', 'khoiDong', 'kyThuat', 'linkYoutubeKyThuat',
+    'baiHat', 'linkYoutube', 'noteCao', 'noteThap', 'huongDanHatJson',
+    'noiDung', 'baiTapVeNha', 'nhanXet', 'ghiChuNoiBo', 'diemSo', 'songsJson', 'techsJson', 'createdAt',
+    'scoreCardJson', 'totalScore', 'sessionGrade', 'focusSkillName', 'scoreNote',
+    'groupSessionId', 'isGroupSession'
+  ],
+  DanhGiaGiong: [
+    'id', 'hocVienId', 'ngayDanhGia', 'loaiPhieu', 'noteThap', 'noteCao',
+    'tongDiem', 'rankGoiY', 'chiTiet', 'ketQuaAI', 'createdAt'
+  ],
+  PhanTichBai: [
+    'id', 'hocVienId', 'tenBai', 'ca', 'tongGoc', 'linkYoutube',
+    'ketQuaAI', 'createdAt'
+  ],
+  Users: [
+    'id', 'username', 'password', 'hoTen', 'role', 'email',
+    'permissions', 'active', 'createdAt', 'updatedAt'
+  ],
+  Settings: [
+    'key', 'value', 'updatedAt'
+  ]
+};
+
+// ===================== KHỞI TẠO =====================
+function setup() {
+  const ss = getDbSpreadsheet_(true);
+  Object.keys(SCHEMA).forEach(function(name){ ensureSheet_(ss, name, SCHEMA[name]); });
+  initDefaultUsers_();
+  Logger.log('DB sẵn sàng: ' + ss.getUrl());
+  return ss.getUrl();
+}
+
+function getDbSpreadsheet_(createIfMissing) {
+  let id = PROP.getProperty('DB_ID');
+  if (id) {
+    try { return SpreadsheetApp.openById(id); } catch(e) { id = null; }
+  }
+  if (!createIfMissing) throw new Error('Chưa có DB. Hãy chạy hàm setup() trước.');
+  const ss = SpreadsheetApp.create(APP_NAME + ' — Database');
+  PROP.setProperty('DB_ID', ss.getId());
+  const def = ss.getSheetByName('Sheet1');
+  if (def && ss.getSheets().length > 1) ss.deleteSheet(def);
+  return ss;
+}
+
+function ensureSheet_(ss, name, headers) {
+  let sh = ss.getSheetByName(name);
+  if (!sh) sh = ss.insertSheet(name);
+  const lastCol = sh.getLastColumn();
+  if (lastCol === 0) {
+    sh.getRange(1, 1, 1, headers.length).setValues([headers])
+      .setFontWeight('bold').setBackground('#3A5A42').setFontColor('#FFFFFF');
+    sh.setFrozenRows(1);
+  } else {
+    const first = sh.getRange(1, 1, 1, lastCol).getValues()[0];
+    const currentHeaders = first.map(function(h){ return String(h).trim(); }).filter(Boolean);
+    const missing = headers.filter(function(h){ return currentHeaders.indexOf(h) === -1; });
+    if (missing.length > 0) {
+      const nextCol = currentHeaders.length + 1;
+      sh.getRange(1, nextCol, 1, missing.length).setValues([missing])
+        .setFontWeight('bold').setBackground('#3A5A42').setFontColor('#FFFFFF');
+    }
+  }
+  return sh;
+}
+
+// ===================== DAO (ĐỌC / GHI THEO TÊN CỘT) =====================
+function sheet_(name) {
+  const ss = getDbSpreadsheet_(true);
+  let sh = ss.getSheetByName(name);
+  if (!sh && SCHEMA[name]) {
+    sh = ensureSheet_(ss, name, SCHEMA[name]);
+  } else if (sh && SCHEMA[name]) {
+    ensureSheet_(ss, name, SCHEMA[name]);
+  }
+  return sh;
+}
+
+function readAll_(name) {
+  const sh = sheet_(name);
+  if (!sh) return [];
+  const data = sh.getDataRange().getValues();
+  if (data.length < 2) return [];
+  const head = data[0];
+  return data.slice(1).map(function(row){
+    const o = {};
+    head.forEach(function(h, i){ if(h) o[h] = row[i]; });
+    return o;
+  });
+}
+
+function nextId_(name, prefix) {
+  const rows = readAll_(name);
+  let max = 0;
+  rows.forEach(function(r){
+    const m = String(r.id || '').match(/(\d+)$/);
+    if (m) max = Math.max(max, parseInt(m[1], 10));
+  });
+  return prefix + '-' + String(max + 1).padStart(6, '0');
+}
+
+function insert_(name, obj) {
+  const sh = sheet_(name);
+  const head = sh.getRange(1, 1, 1, sh.getLastColumn()).getValues()[0];
+  const row = head.map(function(h){ return obj[h] !== undefined ? obj[h] : ''; });
+  sh.appendRow(row);
+  return obj;
+}
+
+function update_(name, id, patch) {
+  const sh = sheet_(name);
+  const data = sh.getDataRange().getValues();
+  if (data.length < 2) return false;
+  const head = data[0];
+  const idCol = head.indexOf('id');
+  if (idCol === -1) return false;
+  for (let r = 1; r < data.length; r++) {
+    if (String(data[r][idCol]) === String(id)) {
+      head.forEach(function(h, c){
+        if (patch[h] !== undefined) {
+          sh.getRange(r + 1, c + 1).setValue(patch[h]);
+        }
+      });
+      return true;
+    }
+  }
+  return false;
+}
+
+// ===================== ROUTER CHO WEB APP =====================
+function doGet() {
+  return HtmlService.createTemplateFromFile('Index')
+    .evaluate()
+    .setTitle(APP_NAME)
+    .addMetaTag('viewport', 'width=device-width, initial-scale=1')
+    .setXFrameOptionsMode(HtmlService.XFrameOptionsMode.ALLOWALL);
+}
+
+// ===================== CẤU HÌNH HỆ THỐNG (GEMINI & DRIVE) =====================
+function getConfig() {
+  return {
+    geminiApiKey:    PROP.getProperty('GEMINI_API_KEY') || '',
+    geminiModel:     PROP.getProperty('GEMINI_MODEL') || 'gemini-2.0-flash',
+    sharedDriveLink: PROP.getProperty('SHARED_DRIVE_LINK') || '',
+    scheduleSheetLink: PROP.getProperty('SCHEDULE_SS_LINK') || '',
+    groupClasses:    PROP.getProperty('GROUP_CLASSES') || 'TN12',
+    dbUrl:           getDbUrl()
+  };
+}
+
+function saveConfig(cfg) {
+  if (cfg.geminiApiKey !== undefined) {
+    PROP.setProperty('GEMINI_API_KEY', String(cfg.geminiApiKey).trim());
+  }
+  if (cfg.geminiModel) {
+    PROP.setProperty('GEMINI_MODEL', String(cfg.geminiModel).trim());
+  }
+  if (cfg.sharedDriveLink !== undefined) {
+    const link = String(cfg.sharedDriveLink).trim();
+    PROP.setProperty('SHARED_DRIVE_LINK', link);
+    const folderId = extractFolderId_(link);
+    if (folderId) PROP.setProperty('SHARED_DRIVE_ID', folderId);
+  }
+  if (cfg.scheduleSheetLink !== undefined) {
+    const sLink = String(cfg.scheduleSheetLink).trim();
+    PROP.setProperty('SCHEDULE_SS_LINK', sLink);
+    PROP.setProperty('SCHEDULE_SS_ID', extractFolderId_(sLink));
+  }
+  if (cfg.groupClasses !== undefined) {
+    PROP.setProperty('GROUP_CLASSES', String(cfg.groupClasses).trim());
+  }
+  return { success: true, message: 'Đã lưu cấu hình thành công!' };
+}
+
+function extractFolderId_(link) {
+  if (!link) return '';
+  const m = link.match(/[-\w]{25,}/);
+  return m ? m[0] : '';
+}
+
+// ===================== TẠO FOLDER GOOGLE DRIVE TỰ ĐỘNG =====================
+/**
+ * Tạo folder học viên tự động theo cú pháp: [Rank].[Tên học viên].[Lớp].[dd-MM-yyyy]
+ * Ví dụ: B.A Liêm.TN11.29-03-2026
+ * Thư mục con sẽ nằm trong Thư mục Drive chung (nếu đã cấu hình).
+ */
+function createStudentDriveFolder(st) {
+  try {
+    const rank = String(st.rank || 'A').trim();
+    const hoTen = String(st.hoTen || 'HocVien').trim();
+    const lop = String(st.lop || 'TN').trim();
+    
+    let dateStr = '';
+    if (st.ngayBatDau) {
+      const d = new Date(st.ngayBatDau);
+      if (!isNaN(d.getTime())) {
+        dateStr = Utilities.formatDate(d, Session.getScriptTimeZone(), 'dd-MM-yyyy');
+      }
+    }
+    if (!dateStr) {
+      dateStr = Utilities.formatDate(new Date(), Session.getScriptTimeZone(), 'dd-MM-yyyy');
+    }
+
+    // Tên folder chuẩn: B.A Liêm.TN11.29-03-2026
+    const folderName = rank + '.' + hoTen + '.' + lop + '.' + dateStr;
+
+    // Tìm thư mục cha
+    const sharedLink = PROP.getProperty('SHARED_DRIVE_LINK') || '';
+    const sharedId = PROP.getProperty('SHARED_DRIVE_ID') || extractFolderId_(sharedLink);
+
+    let parentFolder = null;
+    if (sharedId) {
+      try {
+        parentFolder = DriveApp.getFolderById(sharedId);
+      } catch(e) {
+        Logger.log('Không mở được shared folder theo ID: ' + e.message);
+      }
+    }
+
+    let newFolder;
+    if (parentFolder) {
+      newFolder = parentFolder.createFolder(folderName);
+    } else {
+      newFolder = DriveApp.createFolder(folderName);
+    }
+
+    const folderUrl = newFolder.getUrl();
+
+    // Nếu học viên đã có ID, cập nhật thẳng vào DB
+    if (st.id) {
+      update_(T.HocVien, st.id, { linkDrive: folderUrl, updatedAt: new Date() });
+    }
+
+    return {
+      success: true,
+      folderName: folderName,
+      folderUrl: folderUrl,
+      message: 'Đã tạo thư mục thành công: ' + folderName
+    };
+  } catch(err) {
+    return {
+      success: false,
+      message: 'Lỗi tạo folder Google Drive: ' + err.message
+    };
+  }
+}
+
+// ===================== NGƯỜI DÙNG & MA TRẬN PHÂN QUYỀN =====================
+const DEFAULT_PERMISSIONS = {
+  admin: {
+    students: { view: true, edit: true, delete: true },
+    sessions: { view: true, edit: true, delete: true },
+    voice:    { view: true, edit: true, delete: true },
+    songs:    { view: true, edit: true, delete: true },
+    settings: { view: true, edit: true, delete: true }
+  },
+  gv: {
+    students: { view: true, edit: true, delete: false },
+    sessions: { view: true, edit: true, delete: true },
+    voice:    { view: true, edit: true, delete: true },
+    songs:    { view: true, edit: true, delete: true },
+    settings: { view: false, edit: false, delete: false }
+  }
+};
+
+function initDefaultUsers_() {
+  const users = readAll_(T.Users);
+  if (users.length === 0) {
+    const now = new Date();
+    const defaults = [
+      {
+        id: 'USR-000001', username: 'admin', password: '123', hoTen: 'Quản trị viên (Admin)',
+        role: 'admin', email: 'admin@tonymusic.vn',
+        permissions: JSON.stringify(DEFAULT_PERMISSIONS.admin),
+        active: true, createdAt: now, updatedAt: now
+      },
+      {
+        id: 'USR-000002', username: 'linh', password: '123', hoTen: 'Giảng viên Linh',
+        role: 'gv', email: 'linh@tonymusic.vn',
+        permissions: JSON.stringify(DEFAULT_PERMISSIONS.gv),
+        active: true, createdAt: now, updatedAt: now
+      },
+      {
+        id: 'USR-000003', username: 'quan', password: '123', hoTen: 'Giảng viên Quân',
+        role: 'gv', email: 'quan@tonymusic.vn',
+        permissions: JSON.stringify(DEFAULT_PERMISSIONS.gv),
+        active: true, createdAt: now, updatedAt: now
+      }
+    ];
+    defaults.forEach(function(u){ insert_(T.Users, u); });
+  }
+}
+
+function getUsers() {
+  initDefaultUsers_();
+  return readAll_(T.Users)
+    .filter(function(u){ return u.active !== false && u.active !== 'FALSE'; })
+    .map(function(u){
+      const out = cleanRow_(u);
+      try {
+        out.permissions = typeof out.permissions === 'string' ? JSON.parse(out.permissions || '{}') : out.permissions;
+      } catch(e) {
+        out.permissions = DEFAULT_PERMISSIONS[out.role] || DEFAULT_PERMISSIONS.gv;
+      }
+      return out;
+    });
+}
+
+function saveUser(u) {
+  const now = new Date();
+  const permsStr = typeof u.permissions === 'object' ? JSON.stringify(u.permissions) : (u.permissions || '');
+  
+  if (u.id) {
+    const patch = {
+      hoTen: u.hoTen,
+      username: u.username,
+      role: u.role || 'gv',
+      email: u.email || '',
+      permissions: permsStr,
+      updatedAt: now
+    };
+    if (u.password) patch.password = u.password;
+    update_(T.Users, u.id, patch);
+    return { success: true, id: u.id, message: 'Đã cập nhật người dùng!' };
+  } else {
+    const id = nextId_(T.Users, 'USR');
+    const obj = {
+      id: id,
+      username: u.username || ('user_' + Date.now()),
+      password: u.password || '123456',
+      hoTen: u.hoTen || 'Người dùng mới',
+      role: u.role || 'gv',
+      email: u.email || '',
+      permissions: permsStr || JSON.stringify(DEFAULT_PERMISSIONS[u.role || 'gv']),
+      active: true,
+      createdAt: now,
+      updatedAt: now
+    };
+    insert_(T.Users, obj);
+    return { success: true, id: id, message: 'Đã tạo người dùng mới!' };
+  }
+}
+
+function deleteUsers(ids) {
+  if (!Array.isArray(ids)) ids = [ids];
+  const now = new Date();
+  ids.forEach(function(id){
+    update_(T.Users, id, { active: false, updatedAt: now });
+  });
+  return { success: true, count: ids.length, message: 'Đã xoá ' + ids.length + ' người dùng.' };
+}
+
+// ===================== API — DASHBOARD =====================
+function getDashboard() {
+  const hv = readAll_(T.HocVien).filter(function(r){ return r.active !== false && r.active !== 'FALSE'; });
+  const count = function(f){ return hv.filter(f).length; };
+  const norm = function(s){ return String(s||'').trim(); };
+
+  const byStatus = {};
+  const byRank = { A:0, B:0, C:0, D:0 };
+  const byLop = {};
+  hv.forEach(function(r){
+    const st = norm(r.tinhTrang) || 'Khác';
+    byStatus[st] = (byStatus[st]||0)+1;
+    const rk = norm(r.rank).toUpperCase();
+    if (byRank[rk] !== undefined) byRank[rk]++;
+    const lp = norm(r.lop) || 'Chưa xếp';
+    byLop[lp] = (byLop[lp]||0)+1;
+  });
+
+  const isNghi = function(s){ s=norm(s); return s.indexOf('nghỉ')>=0 || s.indexOf('Nghỉ')>=0; };
+  const isThu  = function(s){ s=norm(s); return s.indexOf('thử')>=0; };
+  const isHoc  = function(s){ s=norm(s); return s.indexOf('Đang học')>=0; };
+  const isDone = function(s){ s=norm(s); return s.indexOf('hoàn thành')>=0; };
+
+  return {
+    tong:      hv.length,
+    dangHoc:   count(function(r){ return isHoc(r.tinhTrang); }),
+    hoanThanh: count(function(r){ return isDone(r.tinhTrang); }),
+    nghi:      count(function(r){ return isNghi(r.tinhTrang); }),
+    hocThu:    count(function(r){ return isThu(r.tinhTrang); }),
+    byStatus: byStatus, byRank: byRank, byLop: byLop
+  };
+}
+
+// ===================== API — HỌC VIÊN =====================
+function getStudents() {
+  fixBlankIds_();
+  return readAll_(T.HocVien)
+    .filter(function(r){ return r.active !== false && r.active !== 'FALSE'; })
+    .map(cleanRow_);
+}
+
+function getStudent(id) {
+  const s = readAll_(T.HocVien).filter(function(r){ return String(r.id) === String(id); })[0];
+  if (!s) return null;
+  const out = cleanRow_(s);
+  out.buoiHoc      = readAll_(T.BuoiHoc).filter(function(r){ return String(r.hocVienId) === String(id); }).map(cleanRow_);
+  out.danhGiaGiong = readAll_(T.DanhGiaGiong).filter(function(r){ return String(r.hocVienId) === String(id); }).map(cleanRow_);
+  out.phanTichBai  = readAll_(T.PhanTichBai).filter(function(r){ return String(r.hocVienId) === String(id); }).map(cleanRow_);
+  return out;
+}
+
+function saveStudent(data) {
+  const now = new Date();
+  
+  // Tự động tính số buổi (bỏ qua khi chỉ cập nhật một phần, VD: áp dụng Rank/Lộ trình)
+  const isPartialUpdate = data.id && String(data.id).trim() !== '' &&
+    data.soBuoiKhoa === undefined && data.soBuoiDeal === undefined && data.soBuoiDaHoc === undefined;
+  const soKhoa = parseInt(data.soBuoiKhoa || data.soBuoiDeal, 10) || 0;
+  if (!isPartialUpdate) {
+    const daHoc  = parseInt(data.soBuoiDaHoc, 10) || 0;
+    const conLai = Math.max(0, soKhoa - daHoc);
+    data.soBuoiKhoa   = soKhoa;
+    data.soBuoiDeal   = data.soBuoiDeal || soKhoa;
+    data.soBuoiDaHoc  = daHoc;
+    data.soBuoiConLai = conLai;
+  }
+
+  // Xử lý học phí & loại học viên
+  if (data.hocPhi !== undefined) data.hocPhi = parseFloat(data.hocPhi) || (soKhoa >= 8 ? 2500000 : 1750000);
+  if (data.tienMatDaThu !== undefined) data.tienMatDaThu = parseFloat(data.tienMatDaThu) || 0;
+  if (data.daDongHocPhi !== undefined) {
+    data.daDongHocPhi = (String(data.daDongHocPhi).toUpperCase() === 'PAID' || data.daDongHocPhi === true || String(data.daDongHocPhi).toUpperCase() === 'TRUE');
+  }
+  // Chỉ gán mặc định loại HV khi tạo mới (GV không gửi trường học phí → không ghi đè dữ liệu Admin)
+  if (!data.loaiHocVien && !(data.id && String(data.id).trim() !== '')) data.loaiHocVien = 'NEW';
+
+  // Nếu có ID hợp lệ -> Cập nhật
+  if (data.id && String(data.id).trim() !== '') {
+    data.updatedAt = now;
+    update_(T.HocVien, data.id, data);
+    return data.id;
+  }
+  
+  // Nếu chưa có ID -> Sinh ID mới chuẩn HV-xxxxxx
+  const id = nextId_(T.HocVien, 'HV');
+  const cleanData = Object.assign({}, data);
+  delete cleanData.id; // Đảm bảo không bị đè bởi id rỗng
+  
+  const obj = Object.assign({
+    id: id,
+    active: true,
+    createdAt: now,
+    updatedAt: now,
+    tinhTrang: data.tinhTrang || 'Đang học',
+    rank: data.rank || 'A'
+  }, cleanData);
+  
+  insert_(T.HocVien, obj);
+  return id;
+}
+
+function deleteStudents(ids) {
+  if (!ids) return { success: false, message: 'Chưa chọn học viên nào' };
+  if (!Array.isArray(ids)) ids = [ids];
+  if (!ids.length) return { success: false, message: 'Danh sách học viên rỗng' };
+
+  const idStrs = ids.map(function(id){ return String(id).trim(); });
+
+  // 1. Xoá hàng trực tiếp trên sheet HocVien (Batch update)
+  const sh = sheet_(T.HocVien);
+  const data = sh.getDataRange().getValues();
+  if (data.length >= 2) {
+    const idCol = data[0].indexOf('id');
+    if (idCol !== -1) {
+      const remaining = [data[0]];
+      for (let r = 1; r < data.length; r++) {
+        if (idStrs.indexOf(String(data[r][idCol] || '').trim()) === -1) {
+          remaining.push(data[r]);
+        }
+      }
+      sh.clearContents();
+      if (remaining.length > 0) {
+        sh.getRange(1, 1, remaining.length, remaining[0].length).setValues(remaining);
+      }
+    }
+  }
+
+  // 2. Xoá tất cả các buổi học liên quan trên sheet BuoiHoc
+  const shBh = sheet_(T.BuoiHoc);
+  const dataBh = shBh.getDataRange().getValues();
+  if (dataBh.length >= 2) {
+    const hvCol = dataBh[0].indexOf('hocVienId');
+    if (hvCol !== -1) {
+      const remainingBh = [dataBh[0]];
+      for (let r = 1; r < dataBh.length; r++) {
+        if (idStrs.indexOf(String(dataBh[r][hvCol] || '').trim()) === -1) {
+          remainingBh.push(dataBh[r]);
+        }
+      }
+      shBh.clearContents();
+      if (remainingBh.length > 0) {
+        shBh.getRange(1, 1, remainingBh.length, remainingBh[0].length).setValues(remainingBh);
+      }
+    }
+  }
+
+  // 3. Xoá các đánh giá giọng & phân tích bài liên quan
+  ['DanhGiaGiong', 'PhanTichBai'].forEach(function(tName){
+    const shOther = sheet_(tName);
+    const dOther = shOther.getDataRange().getValues();
+    if (dOther.length >= 2) {
+      const hvCol = dOther[0].indexOf('hocVienId');
+      if (hvCol !== -1) {
+        const rem = [dOther[0]];
+        for (let r = 1; r < dOther.length; r++) {
+          if (idStrs.indexOf(String(dOther[r][hvCol] || '').trim()) === -1) {
+            rem.push(dOther[r]);
+          }
+        }
+        shOther.clearContents();
+        if (rem.length > 0) {
+          shOther.getRange(1, 1, rem.length, rem[0].length).setValues(rem);
+        }
+      }
+    }
+  });
+
+  return { success: true, count: ids.length, message: 'Đã xoá ' + ids.length + ' học viên và toàn bộ dữ liệu liên quan!' };
+}
+
+function deleteStudent(id) {
+  return deleteStudents([id]);
+}
+
+function renewStudentSessions(hocVienId, extraSessions, newTotalSessions) {
+  const now = new Date();
+  const hv = readAll_(T.HocVien).filter(function(r){ return String(r.id) === String(hocVienId); })[0];
+  if (!hv) throw new Error('Không tìm thấy học viên');
+  
+  let currentKhoa = parseInt(hv.soBuoiKhoa || hv.soBuoiDeal, 10) || 0;
+  let daHoc = parseInt(hv.soBuoiDaHoc, 10) || 0;
+  
+  let finalKhoa = currentKhoa;
+  if (newTotalSessions != null && parseInt(newTotalSessions, 10) > 0) {
+    finalKhoa = parseInt(newTotalSessions, 10);
+  } else if (extraSessions != null && parseInt(extraSessions, 10) > 0) {
+    finalKhoa = currentKhoa + parseInt(extraSessions, 10);
+  }
+  
+  const conLai = Math.max(0, finalKhoa - daHoc);
+  
+  update_(T.HocVien, hocVienId, {
+    soBuoiKhoa: finalKhoa,
+    soBuoiDeal: finalKhoa,
+    soBuoiConLai: conLai,
+    tinhTrang: 'Đang học',
+    ngayKhoaMoi: Utilities.formatDate(now, Session.getScriptTimeZone(), 'yyyy-MM-dd'),
+    updatedAt: now
+  });
+  
+  return {
+    success: true,
+    soBuoiKhoa: finalKhoa,
+    soBuoiDaHoc: daHoc,
+    soBuoiConLai: conLai,
+    message: 'Đã gia hạn khoá học thành công! Tổng số buổi hiện tại: ' + finalKhoa + ' buổi (Còn lại: ' + conLai + ' buổi).'
+  };
+}
+
+// ===================== API — BUỔI HỌC =====================
+function saveSession(data) {
+  const now = new Date();
+  if (data.id && String(data.id).trim() !== '') {
+    update_(T.BuoiHoc, data.id, data);
+    return data.id;
+  }
+  const id = nextId_(T.BuoiHoc, 'BH');
+  const cleanData = Object.assign({}, data);
+  delete cleanData.id;
+  const obj = Object.assign({ id: id, createdAt: now }, cleanData);
+  insert_(T.BuoiHoc, obj);
+  
+  // Cập nhật số buổi đã học và tính lại số buổi còn lại
+  const hv = readAll_(T.HocVien).filter(function(r){ return String(r.id) === String(data.hocVienId); })[0];
+  const cnt = readAll_(T.BuoiHoc).filter(function(r){ return String(r.hocVienId) === String(data.hocVienId); }).length;
+  const soKhoa = hv ? (parseInt(hv.soBuoiKhoa || hv.soBuoiDeal, 10) || 0) : 0;
+  const conLai = Math.max(0, soKhoa - cnt);
+  
+  update_(T.HocVien, data.hocVienId, {
+    soBuoiDaHoc: cnt,
+    soBuoiConLai: conLai,
+    updatedAt: now
+  });
+  return id;
+}
+
+function deleteSessions(sessionIds, hocVienId) {
+  if (!Array.isArray(sessionIds)) sessionIds = [sessionIds];
+  sessionIds = sessionIds.map(function(id){ return String(id).trim(); });
+  
+  const sh = sheet_(T.BuoiHoc);
+  const data = sh.getDataRange().getValues();
+  if (data.length < 2) return { success: true, count: 0 };
+  
+  const head = data[0];
+  const idCol = head.indexOf('id');
+  const hvIdCol = head.indexOf('hocVienId');
+  if (idCol === -1) return { success: false, message: 'Không tìm thấy cột id' };
+
+  const remaining = [head];
+  let deletedCount = 0;
+  let remainingHvCount = 0;
+
+  for (let r = 1; r < data.length; r++) {
+    const rowId = String(data[r][idCol] || '').trim();
+    if (sessionIds.indexOf(rowId) !== -1) {
+      deletedCount++;
+    } else {
+      remaining.push(data[r]);
+      if (hocVienId && hvIdCol !== -1 && String(data[r][hvIdCol] || '').trim() === String(hocVienId).trim()) {
+        remainingHvCount++;
+      }
+    }
+  }
+
+  if (deletedCount > 0) {
+    // Xoá và ghi lại toàn bộ bảng trong 1 thao tác duy nhất (Batch write siêu tốc)
+    sh.clearContents();
+    sh.getRange(1, 1, remaining.length, remaining[0].length).setValues(remaining);
+  }
+
+  // Cập nhật lại số buổi đã học và còn lại cho học viên
+  if (hocVienId) {
+    const now = new Date();
+    const hv = readAll_(T.HocVien).filter(function(r){ return String(r.id) === String(hocVienId); })[0];
+    const soKhoa = hv ? (parseInt(hv.soBuoiKhoa || hv.soBuoiDeal, 10) || 0) : 0;
+    const conLai = Math.max(0, soKhoa - remainingHvCount);
+    
+    update_(T.HocVien, hocVienId, {
+      soBuoiDaHoc: remainingHvCount,
+      soBuoiConLai: conLai,
+      updatedAt: now
+    });
+  }
+
+  return { success: true, count: deletedCount, message: 'Đã xoá ' + deletedCount + ' buổi học thành công.' };
+}
+
+// ===================== API — QUẢN LÝ HỌC PHÍ & QUYẾT TOÁN DOANH THU =====================
+
+/**
+ * Lấy toàn bộ dữ liệu học phí, điểm danh và quyết toán chia sẻ doanh thu
+ * @param {number|string} month - Tháng (1-12)
+ * @param {number|string} year - Năm (VD: 2026)
+ */
+function getTuitionSettlementData(month, year) {
+  const now = new Date();
+  const m = month ? parseInt(month, 10) : (now.getMonth() + 1);
+  const y = year ? parseInt(year, 10) : now.getFullYear();
+
+  const students = readAll_(T.HocVien).filter(function(r){ return r.active !== false && r.active !== 'FALSE' && !isTrialStudent_(r); });
+  const allSessions = readAll_(T.BuoiHoc);
+
+  // Nhóm buổi học theo học viên
+  const sessionsByStudent = {};
+  allSessions.forEach(function(b){
+    const hId = String(b.hocVienId || '').trim();
+    if (!sessionsByStudent[hId]) sessionsByStudent[hId] = [];
+    sessionsByStudent[hId].push(b);
+  });
+
+  let totalTuition = 0;
+  let totalLinh = 0;
+  let totalQuan = 0;
+  let totalCenter = 0;
+  let totalCashCollected = 0;
+  let unpaidCount = 0;
+  let renewAlertCount = 0;
+
+  const studentList = students.map(function(s){
+    const row = cleanRow_(s);
+    const sId = String(row.id || '').trim();
+    const stSessions = sessionsByStudent[sId] || [];
+
+    // Số buổi deal & đã học
+    const totalDeal = parseInt(row.soBuoiKhoa || row.soBuoiDeal, 10) || 12;
+    const attended = stSessions.length;
+    const remaining = Math.max(0, totalDeal - attended);
+
+    // Học phí
+    const tuition = parseFloat(row.hocPhi) || (totalDeal >= 8 ? 2500000 : 1750000);
+    const isPaid = (String(row.daDongHocPhi).toUpperCase() === 'TRUE' || row.daDongHocPhi === true || String(row.daDongHocPhi).toUpperCase() === 'PAID');
+    const cashCollected = parseFloat(row.tienMatDaThu) || 0;
+    const gv = String(row.giaoVien || 'Linh').trim();
+    const isPrimaryTeacher = (gv.toLowerCase().indexOf('quân') === -1 && gv.toLowerCase().indexOf('quan') === -1);
+    const studentType = String(row.loaiHocVien || 'NEW').trim().toUpperCase();
+
+    // Tính trạng thái cảnh báo nợ học phí
+    let paymentAlert = 'ACTIVE'; // 'UNPAID' | 'RENEW_SOON' | 'ACTIVE'
+    let paymentAlertText = 'Đang học';
+    let paymentAlertBadge = 'st-hoc';
+
+    if (!isPaid) {
+      paymentAlert = 'UNPAID';
+      paymentAlertText = 'Cần thu tiền';
+      paymentAlertBadge = 'st-nghi'; // Đỏ
+      unpaidCount++;
+    } else if (remaining <= 1) {
+      paymentAlert = 'RENEW_SOON';
+      paymentAlertText = remaining === 0 ? 'Hết buổi' : 'Sắp đến hạn đóng';
+      paymentAlertBadge = 'st-done'; // Vàng cam
+      renewAlertCount++;
+    }
+
+    // Tính toán chia sẻ doanh thu (Revenue Sharing)
+    let teacherCommissionRate = 0;
+    let teacherRevenue = 0;
+    let centerRevenue = 0;
+    let externalTeacherPay = 0;
+
+    if (isPrimaryTeacher) {
+      // Giáo viên chính (Linh): 70% nếu học từ 2 khóa trở lên, 60% nếu học viên mới
+      if (studentType === 'STUDIED_2_TERMS' || studentType === 'STUDIED_MANY') {
+        teacherCommissionRate = 0.70;
+      } else {
+        teacherCommissionRate = 0.60;
+      }
+      teacherRevenue = Math.round(tuition * teacherCommissionRate);
+      centerRevenue = Math.round(tuition - teacherRevenue - cashCollected);
+      totalLinh += teacherRevenue;
+      totalCashCollected += cashCollected;
+    } else {
+      // Giáo viên cộng tác (Quân): 150k/buổi theo tổng số buổi
+      teacherCommissionRate = 0;
+      externalTeacherPay = totalDeal * 150000;
+      teacherRevenue = externalTeacherPay;
+      centerRevenue = Math.round(tuition - externalTeacherPay);
+      totalQuan += externalTeacherPay;
+    }
+
+    totalTuition += tuition;
+    totalCenter += centerRevenue;
+
+    return {
+      id: sId,
+      hoTen: row.hoTen || '—',
+      lop: row.lop || '—',
+      rank: row.rank || 'A',
+      giaoVien: gv,
+      isPrimaryTeacher: isPrimaryTeacher,
+      studentType: studentType,
+      totalDealSessions: totalDeal,
+      attendedSessionsCount: attended,
+      remainingSessions: remaining,
+      tuitionFee: tuition,
+      isPaid: isPaid,
+      cashCollected: cashCollected,
+      paymentAlert: paymentAlert,
+      paymentAlertText: paymentAlertText,
+      paymentAlertBadge: paymentAlertBadge,
+      teacherCommissionRate: teacherCommissionRate,
+      teacherRevenue: teacherRevenue,
+      centerRevenue: centerRevenue,
+      externalTeacherPay: externalTeacherPay,
+      linkDrive: row.linkDrive || '',
+      sessions: stSessions.map(function(b){
+        return {
+          id: b.id,
+          buoiSo: b.buoiSo,
+          ngayHoc: b.ngayHoc,
+          baiHat: b.baiHat,
+          nhanXet: b.nhanXet
+        };
+      })
+    };
+  });
+
+  // Tổng số tiền Anh Thọ cần chuyển khoản cho Linh: Linh nhận - Tiền mặt Linh đã thu
+  const thoTransfersToLinh = Math.max(0, totalLinh - totalCashCollected);
+
+  // Kế hoạch thu tháng mới: Các học viên còn <= 1 buổi và đang có trạng thái Đang học
+  const renewPlanList = studentList.filter(function(s){
+    return s.remainingSessions <= 1;
+  });
+
+  // Danh sách cần thu tiền
+  const unpaidList = studentList.filter(function(s){
+    return !s.isPaid;
+  });
+
+  const monthStr = String(m).padStart(2, '0');
+  const memoText = 'Thanh toan day nhac thang ' + monthStr + '/' + y;
+
+  return {
+    month: m,
+    year: y,
+    summary: {
+      totalStudents: studentList.length,
+      totalTuition: totalTuition,
+      totalLinh: totalLinh,
+      totalQuan: totalQuan,
+      totalCenter: totalCenter,
+      totalCashCollected: totalCashCollected,
+      thoTransfersToLinh: thoTransfersToLinh,
+      unpaidCount: unpaidCount,
+      renewAlertCount: renewAlertCount
+    },
+    students: studentList,
+    unpaidList: unpaidList,
+    renewPlanList: renewPlanList,
+    vietQr: {
+      bank: 'VIB',
+      accountNumber: '140396',
+      accountName: 'NGUYEN QUANG LINH',
+      amount: thoTransfersToLinh,
+      memo: memoText,
+      qrUrl: 'https://img.vietqr.io/image/VIB-140396-compact2.png?amount=' + thoTransfersToLinh + '&addInfo=' + encodeURIComponent(memoText) + '&accountName=NGUYEN%20QUANG%20LINH'
+    }
+  };
+}
+
+/**
+ * Cập nhật nhanh trạng thái học phí & tiền mặt
+ */
+function updateTuitionPayment(hocVienId, isPaid, cashCollected) {
+  const now = new Date();
+  const patch = {
+    daDongHocPhi: !!isPaid,
+    updatedAt: now
+  };
+  if (cashCollected !== undefined && cashCollected !== null) {
+    patch.tienMatDaThu = parseFloat(cashCollected) || 0;
+  }
+  update_(T.HocVien, hocVienId, patch);
+  return { success: true, message: 'Đã cập nhật học phí học viên thành công!' };
+}
+
+/**
+ * Điểm danh nhanh 1 chạm cho học viên
+ */
+function quickCheckInAttendance(hocVienId, buoiSo, dateStr, notes) {
+  const now = new Date();
+  const dStr = dateStr || Utilities.formatDate(now, Session.getScriptTimeZone(), 'yyyy-MM-dd');
+  
+  const id = nextId_(T.BuoiHoc, 'BH');
+  const sessionObj = {
+    id: id,
+    hocVienId: hocVienId,
+    ngayHoc: dStr,
+    buoiSo: buoiSo || 1,
+    noiDung: notes || 'Điểm danh buổi học',
+    createdAt: now
+  };
+  insert_(T.BuoiHoc, sessionObj);
+
+  // Cập nhật lại số buổi đã học & còn lại
+  const hv = readAll_(T.HocVien).filter(function(r){ return String(r.id) === String(hocVienId); })[0];
+  const cnt = readAll_(T.BuoiHoc).filter(function(r){ return String(r.hocVienId) === String(hocVienId); }).length;
+  const soKhoa = hv ? (parseInt(hv.soBuoiKhoa || hv.soBuoiDeal, 10) || 0) : 0;
+  const conLai = Math.max(0, soKhoa - cnt);
+  
+  update_(T.HocVien, hocVienId, {
+    soBuoiDaHoc: cnt,
+    soBuoiConLai: conLai,
+    updatedAt: now
+  });
+
+  return { success: true, sessionId: id, attended: cnt, remaining: conLai, message: 'Đã điểm danh buổi ' + (buoiSo || cnt) + '!' };
+}
+
+/**
+ * Huỷ điểm danh nhanh
+ */
+function quickRemoveAttendance(hocVienId, buoiSo) {
+  const sh = sheet_(T.BuoiHoc);
+  const data = sh.getDataRange().getValues();
+  if (data.length < 2) return { success: false, message: 'Chưa có buổi học' };
+
+  const head = data[0];
+  const idCol = head.indexOf('id');
+  const hvCol = head.indexOf('hocVienId');
+  const bCol = head.indexOf('buoiSo');
+
+  let deletedId = null;
+  const remaining = [head];
+
+  for (let r = 1; r < data.length; r++) {
+    const rHv = String(data[r][hvCol] || '').trim();
+    const rB = String(data[r][bCol] || '').trim();
+    if (!deletedId && rHv === String(hocVienId).trim() && (buoiSo ? (rB === String(buoiSo).trim()) : true)) {
+      deletedId = data[r][idCol];
+    } else {
+      remaining.push(data[r]);
+    }
+  }
+
+  if (deletedId) {
+    sh.clearContents();
+    sh.getRange(1, 1, remaining.length, remaining[0].length).setValues(remaining);
+
+    // Cập nhật lại số buổi
+    const now = new Date();
+    const hv = readAll_(T.HocVien).filter(function(r){ return String(r.id) === String(hocVienId); })[0];
+    const cnt = readAll_(T.BuoiHoc).filter(function(r){ return String(r.hocVienId) === String(hocVienId); }).length;
+    const soKhoa = hv ? (parseInt(hv.soBuoiKhoa || hv.soBuoiDeal, 10) || 0) : 0;
+    const conLai = Math.max(0, soKhoa - cnt);
+    
+    update_(T.HocVien, hocVienId, {
+      soBuoiDaHoc: cnt,
+      soBuoiConLai: conLai,
+      updatedAt: now
+    });
+
+    return { success: true, attended: cnt, remaining: conLai, message: 'Đã huỷ điểm danh buổi học!' };
+  }
+  return { success: false, message: 'Không tìm thấy buổi học để huỷ' };
+}
+
+// ===================== API — LƯU ĐÁNH GIÁ / PHÂN TÍCH =====================
+function saveVoiceAssessment(data) {
+  const id = nextId_(T.DanhGiaGiong, 'DG');
+  const cleanData = Object.assign({}, data);
+  delete cleanData.id;
+  const obj = Object.assign({ id: id, createdAt: new Date() }, cleanData);
+  insert_(T.DanhGiaGiong, obj);
+  
+  // Đồng bộ rank, quãng giọng, nốt & đề xuất lộ trình về hồ sơ học viên
+  const patch = { updatedAt: new Date() };
+  if (data.rankGoiY) patch.rank = data.rankGoiY;
+  if (data.noteThap) patch.noteThap = data.noteThap;
+  if (data.noteCao)  patch.noteCao  = data.noteCao;
+  if (data.noteThap && data.noteCao) {
+    patch.quangGiong = data.noteThap + '–' + data.noteCao;
+  }
+  if (data.khuyenNghi) {
+    patch.khuyenNghi = data.khuyenNghi;
+  }
+  if (data.loaiPhieu === 'Test học thử') {
+    const hv = readAll_(T.HocVien).filter(function(r){ return String(r.id) === String(data.hocVienId); })[0];
+    const ts = hv ? String(hv.trialStatus || '').trim() : '';
+    if (!ts || ts === 'new') patch.trialStatus = 'tested';
+  }
+  update_(T.HocVien, data.hocVienId, patch);
+  return id;
+}
+
+function saveSongAnalysis(data) {
+  const id = nextId_(T.PhanTichBai, 'PT');
+  const cleanData = Object.assign({}, data);
+  delete cleanData.id;
+  const obj = Object.assign({ id: id, createdAt: new Date() }, cleanData);
+  insert_(T.PhanTichBai, obj);
+  return id;
+}
+
+// Tự động kiểm tra và điền ID cho các dòng bị thiếu trong Google Sheets
+function fixBlankIds_() {
+  try {
+    const ss = getDbSpreadsheet_(true);
+    ['HocVien', 'BuoiHoc', 'Users', 'DanhGiaGiong', 'PhanTichBai'].forEach(function(tName){
+      const sh = ss.getSheetByName(tName);
+      if (!sh) return;
+      const data = sh.getDataRange().getValues();
+      if (data.length < 2) return;
+      const head = data[0];
+      const idCol = head.indexOf('id');
+      if (idCol === -1) return;
+      
+      let prefix = 'HV';
+      if (tName === 'BuoiHoc') prefix = 'BH';
+      else if (tName === 'Users') prefix = 'USR';
+      else if (tName === 'DanhGiaGiong') prefix = 'DG';
+      else if (tName === 'PhanTichBai') prefix = 'PT';
+
+      let maxNum = 0;
+      for (let r = 1; r < data.length; r++) {
+        const val = String(data[r][idCol] || '');
+        const m = val.match(/(\d+)$/);
+        if (m) maxNum = Math.max(maxNum, parseInt(m[1], 10));
+      }
+
+      for (let r = 1; r < data.length; r++) {
+        const val = String(data[r][idCol] || '').trim();
+        if (!val) {
+          maxNum++;
+          const newId = prefix + '-' + String(maxNum).padStart(6, '0');
+          sh.getRange(r + 1, idCol + 1).setValue(newId);
+        }
+      }
+    });
+  } catch(e) {
+    Logger.log('Lỗi fixBlankIds_: ' + e.message);
+  }
+}
+
+// ===================== API — BUỔI HỌC NHÓM (GROUP SESSION) =====================
+/**
+ * Lưu 1 buổi học nhóm: tạo N bản ghi BuoiHoc (mỗi HV 1 bản ghi) dùng chung nội dung,
+ * phiếu chấm + nhận xét riêng. Cùng groupSessionId.
+ * @param {Object} common  - Dữ liệu chung (baiHat, kyThuat, songsJson, techsJson, huongDanHatJson...)
+ * @param {Array}  members - [{hocVienId, scoreCardJson, totalScore, sessionGrade, focusSkillName, scoreNote, nhanXet, diemSo}]
+ */
+function saveGroupSession(common, members) {
+  if (!members || !members.length) return { success: false, message: 'Chưa có học viên trong nhóm' };
+  const now = new Date();
+  const groupId = 'GRP-' + now.getTime();
+  const existing = readAll_(T.BuoiHoc);
+  const hvAll = readAll_(T.HocVien);
+
+  let maxNum = 0;
+  existing.forEach(function(r){
+    const m = String(r.id || '').match(/(\d+)$/);
+    if (m) maxNum = Math.max(maxNum, parseInt(m[1], 10));
+  });
+
+  const ids = [];
+  members.forEach(function(mb){
+    const hvId = String(mb.hocVienId || '').trim();
+    if (!hvId) return;
+    const count = existing.filter(function(r){ return String(r.hocVienId) === hvId; }).length;
+    maxNum++;
+    const id = 'BH-' + String(maxNum).padStart(6, '0');
+    const obj = Object.assign({}, common || {}, mb, {
+      id: id,
+      hocVienId: hvId,
+      buoiSo: count + 1,
+      groupSessionId: groupId,
+      isGroupSession: true,
+      createdAt: now
+    });
+    insert_(T.BuoiHoc, obj);
+
+    const hv = hvAll.filter(function(r){ return String(r.id) === hvId; })[0];
+    const soKhoa = hv ? (parseInt(hv.soBuoiKhoa || hv.soBuoiDeal, 10) || 0) : 0;
+    const cnt = count + 1;
+    update_(T.HocVien, hvId, {
+      soBuoiDaHoc: cnt,
+      soBuoiConLai: Math.max(0, soKhoa - cnt),
+      updatedAt: now
+    });
+    ids.push(id);
+  });
+
+  return { success: true, groupSessionId: groupId, ids: ids, message: 'Đã lưu buổi học nhóm cho ' + ids.length + ' học viên!' };
+}
+
+// ===================== API — HỌC THỬ & DANH SÁCH CHỜ =====================
+const TRIAL_STATUS_TEXT = {
+  'new':      'Đã học thử',
+  'tested':   'Đã học thử',
+  'waiting':  'Chờ phản hồi',
+  'rejected': 'Từ chối học'
+};
+
+function isTrialStudent_(r) {
+  const ts = String(r.trialStatus || '').trim();
+  if (ts) return ts !== 'confirmed';
+  const st = String(r.tinhTrang || '');
+  return st.indexOf('thử') >= 0 || st.indexOf('Chờ phản hồi') >= 0 || st.indexOf('Từ chối') >= 0;
+}
+
+/** Thêm / sửa nhanh học viên học thử (form rút gọn) */
+function saveTrialStudent(data) {
+  const now = new Date();
+  const today = Utilities.formatDate(now, Session.getScriptTimeZone(), 'yyyy-MM-dd');
+  const base = {
+    hoTen:          String(data.hoTen || '').trim(),
+    dienThoai:      data.dienThoai || '',
+    loaiGiong:      data.loaiGiong || '',
+    ngayHocThu:     data.ngayHocThu || today,
+    nguonGioiThieu: data.nguonGioiThieu || '',
+    ghiChu:         data.ghiChu || '',
+    updatedAt:      now
+  };
+  if (!base.hoTen) return { success: false, message: 'Vui lòng nhập họ tên' };
+
+  if (data.id && String(data.id).trim() !== '') {
+    update_(T.HocVien, data.id, base);
+    return { success: true, id: data.id, message: 'Đã cập nhật học viên học thử!' };
+  }
+
+  const id = nextId_(T.HocVien, 'HV');
+  insert_(T.HocVien, Object.assign({
+    id: id,
+    rank: '',
+    tinhTrang: TRIAL_STATUS_TEXT['new'],
+    trialStatus: 'new',
+    soBuoiKhoa: 0, soBuoiDeal: 0, soBuoiDaHoc: 0, soBuoiConLai: 0,
+    loaiHocVien: 'NEW',
+    daDongHocPhi: false,
+    active: true,
+    createdAt: now
+  }, base));
+  return { success: true, id: id, message: 'Đã thêm học viên học thử!' };
+}
+
+function updateTrialStatus(id, status) {
+  if (!TRIAL_STATUS_TEXT[status]) return { success: false, message: 'Trạng thái không hợp lệ' };
+  update_(T.HocVien, id, { trialStatus: status, tinhTrang: TRIAL_STATUS_TEXT[status], updatedAt: new Date() });
+  return { success: true, message: 'Đã cập nhật trạng thái học thử' };
+}
+
+/** Chốt đăng ký: chuyển HV học thử → học viên chính thức */
+function confirmTrialStudent(id, info) {
+  info = info || {};
+  const now = new Date();
+  const hv = readAll_(T.HocVien).filter(function(r){ return String(r.id) === String(id); })[0];
+  if (!hv) return { success: false, message: 'Không tìm thấy học viên' };
+
+  const soKhoa = parseInt(info.soBuoiKhoa, 10) || 8;
+  const cnt = readAll_(T.BuoiHoc).filter(function(r){ return String(r.hocVienId) === String(id); }).length;
+  const patch = {
+    lop:          info.lop || hv.lop || 'TN11',
+    giaoVien:     info.giaoVien || hv.giaoVien || 'Linh',
+    soBuoiKhoa:   soKhoa,
+    soBuoiDeal:   soKhoa,
+    soBuoiDaHoc:  cnt,
+    soBuoiConLai: Math.max(0, soKhoa - cnt),
+    ngayBatDau:   info.ngayBatDau || Utilities.formatDate(now, Session.getScriptTimeZone(), 'yyyy-MM-dd'),
+    tinhTrang:    'Đang học',
+    trialStatus:  'confirmed',
+    rank:         hv.rank || 'A',
+    loaiHocVien:  hv.loaiHocVien || 'NEW',
+    active:       true,
+    updatedAt:    now
+  };
+  if (info.hocPhi !== undefined && info.hocPhi !== null && info.hocPhi !== '') {
+    patch.hocPhi = parseFloat(info.hocPhi) || 0;
+  } else {
+    patch.hocPhi = soKhoa >= 8 ? 2500000 : 1750000;
+  }
+  patch.daDongHocPhi = (info.daDongHocPhi === true || String(info.daDongHocPhi).toUpperCase() === 'TRUE');
+  update_(T.HocVien, id, patch);
+  return { success: true, message: 'Đã chốt đăng ký! ' + (hv.hoTen || '') + ' đã chuyển sang học viên chính thức.' };
+}
+
+// ===================== API — TÍCH HỢP SHEET "XẾP LỊCH" =====================
+const SCHEDULE_TOOL_FUNCS = [
+  'taoDanhSachLichDayLinh', 'taoDanhSachLichDayLinhTuanNay',
+  'taoDanhSachLichDayconlai', 'taoDanhSachLichDayconlaiTuanNay',
+  'tongHopLichTrongNangCao', 'tongHopLichHocThu', 'xoaLichDayLinhTuanNay'
+];
+
+function normVi_(s) {
+  return String(s || '').normalize('NFD').replace(/[̀-ͯ]/g, '')
+    .replace(/đ/g, 'd').replace(/Đ/g, 'D').toUpperCase().trim();
+}
+
+function findScheduleSheet_(ss) {
+  const sheets = ss.getSheets();
+  for (let i = 0; i < sheets.length; i++) {
+    if (normVi_(sheets[i].getName()) === 'XEP LICH') return sheets[i];
+  }
+  for (let j = 0; j < sheets.length; j++) {
+    if (normVi_(sheets[j].getName()).indexOf('XEP LICH') >= 0) return sheets[j];
+  }
+  return null;
+}
+
+function getScheduleSpreadsheet_() {
+  const id = PROP.getProperty('SCHEDULE_SS_ID');
+  if (id) {
+    try { return SpreadsheetApp.openById(id); } catch(e) { Logger.log('Không mở được Sheet lịch: ' + e.message); }
+  }
+  try {
+    const act = SpreadsheetApp.getActiveSpreadsheet();
+    if (act && findScheduleSheet_(act)) return act;
+  } catch(e) {}
+  try { return getDbSpreadsheet_(false); } catch(e) {}
+  return null;
+}
+
+/** Đọc vùng A1:I(n) + bảng mapping J:K của sheet XẾP LỊCH */
+function getScheduleSheetData() {
+  const ss = getScheduleSpreadsheet_();
+  if (!ss) return { success: false, message: 'Chưa cấu hình Google Sheet chứa tab "XẾP LỊCH". Vào ⚙ Cấu hình để dán link.' };
+  const sh = findScheduleSheet_(ss);
+  if (!sh) return { success: false, message: 'Không tìm thấy tab "XẾP LỊCH" trong file "' + ss.getName() + '".' };
+
+  const lastRow = Math.min(Math.max(sh.getLastRow(), 3), 80);
+  const vals = sh.getRange(1, 1, lastRow, 9).getDisplayValues();
+  const title = vals[0].map(function(v){ return String(v).trim(); }).filter(Boolean).join(' ');
+  const days = vals[1].slice(2, 9).map(function(v){ return String(v).trim(); });
+
+  const rows = [];
+  let place = '';
+  for (let r = 2; r < vals.length; r++) {
+    const row = vals[r];
+    if (String(row[0]).trim()) place = String(row[0]).trim();
+    const time = String(row[1]).trim();
+    const cells = row.slice(2, 9).map(function(v){ return String(v).trim(); });
+    const hasContent = cells.some(function(c){ return c !== ''; });
+    if (!time && !hasContent) continue;
+    rows.push({ row: r + 1, place: place, time: time, cells: cells });
+  }
+
+  // Bảng mapping học viên → giáo viên (cột J = học viên, cột K = giáo viên)
+  const map = {};
+  if (sh.getLastColumn() >= 11) {
+    const mapRows = Math.min(Math.max(sh.getLastRow(), 1), 300);
+    sh.getRange(1, 10, mapRows, 2).getDisplayValues().forEach(function(m){
+      const n = String(m[0]).trim();
+      const gv = String(m[1]).trim();
+      if (n && gv) map[n] = gv;
+    });
+  }
+
+  return {
+    success: true,
+    spreadsheetName: ss.getName(),
+    sheetUrl: ss.getUrl() + '#gid=' + sh.getSheetId(),
+    title: title,
+    days: days,
+    rows: rows,
+    studentTeacherMap: map
+  };
+}
+
+/** Gọi các hàm Apps Script cũ của sheet XẾP LỊCH (phải nằm cùng project) */
+function runScheduleTool(name, arg) {
+  if (SCHEDULE_TOOL_FUNCS.indexOf(name) === -1) return { success: false, message: 'Công cụ không hợp lệ: ' + name };
+  const g = (typeof globalThis !== 'undefined') ? globalThis : this;
+  const fn = g[name];
+  if (typeof fn !== 'function') {
+    return { success: false, message: 'Chưa có hàm ' + name + '() trong project Apps Script này. Hãy copy file script của sheet XẾP LỊCH (.gs) vào cùng project với Web App.' };
+  }
+  try {
+    const out = (arg !== undefined && arg !== null && arg !== '') ? fn(arg) : fn();
+    let text = '';
+    if (typeof out === 'string') text = out;
+    else if (out && typeof out === 'object') text = JSON.stringify(out, null, 2);
+    return { success: true, result: text, message: 'Đã chạy ' + name + '() thành công.' };
+  } catch(e) {
+    let hint = '';
+    if (/getUi|Cannot call|getActive/i.test(String(e.message))) {
+      hint = ' — Hàm này dùng SpreadsheetApp.getUi() / getActiveSpreadsheet() nên chỉ chạy được trong Sheets. Cần sửa hàm: mở sheet bằng openById() và trả về chuỗi kết quả thay vì hiện hộp thoại.';
+    }
+    return { success: false, message: 'Lỗi khi chạy ' + name + '(): ' + e.message + hint };
+  }
+}
+
+// ===================== GEMINI AI =====================
+function geminiCall_(parts) {
+  const key = PROP.getProperty('GEMINI_API_KEY');
+  const model = PROP.getProperty('GEMINI_MODEL') || 'gemini-2.0-flash';
+  if (!key) return '⚠️ Chưa cấu hình API Key Gemini. Vui lòng vào mục "Cấu hình" trong menu để dán API Key.';
+  
+  const url = 'https://generativelanguage.googleapis.com/v1beta/models/'
+            + model + ':generateContent?key=' + key;
+  const payload = {
+    contents: [{ role: 'user', parts: parts }],
+    generationConfig: { temperature: 0.6, maxOutputTokens: 2048 }
+  };
+  try {
+    const res = UrlFetchApp.fetch(url, {
+      method: 'post',
+      contentType: 'application/json',
+      payload: JSON.stringify(payload),
+      muteHttpExceptions: true
+    });
+    const json = JSON.parse(res.getContentText());
+    if (json.candidates && json.candidates[0] && json.candidates[0].content) {
+      return json.candidates[0].content.parts.map(function(p){ return p.text || ''; }).join('\n');
+    }
+    return '⚠️ AI không trả kết quả: ' + (json.error ? json.error.message : res.getContentText().slice(0, 300));
+  } catch(e) {
+    return '⚠️ Lỗi gọi Gemini AI: ' + e.message;
+  }
+}
+
+/** Phân tích giọng — GV nhập dữ liệu, AI tổng hợp thành nhận xét + lộ trình */
+function aiAnalyzeVoice(input) {
+  const prompt =
+    'Bạn là huấn luyện viên thanh nhạc chuyên nghiệp. Dựa trên dữ liệu quan sát GV nhập dưới đây, '
+    + 'hãy viết NHẬN XÉT NĂNG LỰC và ĐỀ XUẤT LỘ TRÌNH cho học viên (tiếng Việt, súc tích, có cấu trúc rõ ràng).\n\n'
+    + 'Thang xếp Rank nền tảng (18 điểm): A(0-6)=Sơ cấp, B(7-11)=Trung cấp sơ, C(12-14)=Trung cấp, D(15-17)=Khá/Tốt.\n\n'
+    + 'HỌC VIÊN: ' + (input.hoTen || '') + '\n'
+    + 'Loại giọng: ' + (input.loaiGiong || 'Chưa xác định') + '\n'
+    + 'Quãng giọng: ' + (input.quangGiong || ((input.noteThap||'?') + ' — ' + (input.noteCao||'?'))) + '\n'
+    + 'Note chuyển giọng: ' + (input.noteChuyenGiong || 'Chưa rõ') + '\n'
+    + 'Tổng điểm nền tảng: ' + (input.tongDiem || '?') + '/18 → Rank gợi ý: ' + (input.rankGoiY || '?') + '\n'
+    + 'Mục tiêu học: ' + (input.mucTieu || 'chưa nêu') + '\n'
+    + 'Chi tiết tiêu chí:\n' + (input.chiTietText || '(không có)') + '\n\n'
+    + 'Trả về đúng 4 mục có tiêu đề in đậm để hệ thống dễ trích xuất:\n'
+    + '**1. Nhận xét năng lực** (Điểm mạnh & Điểm yếu chính)\n'
+    + '**2. Kỹ thuật nên học ngay** (Gạch đầu dòng)\n'
+    + '**3. Kỹ thuật chưa đủ điều kiện** (Gạch đầu dòng)\n'
+    + '**4. Khuyến nghị lộ trình** (Số buổi ước lượng + mục tiêu từng giai đoạn)';
+  return geminiCall_([{ text: prompt }]);
+}
+
+/** Phân tích bài hát từ link YouTube */
+function aiAnalyzeSong(input) {
+  const guide =
+    'Bạn là chuyên gia phối khí & huấn luyện thanh nhạc. Phân tích bài hát để chuẩn bị giáo án dạy học viên.\n'
+    + 'Tên bài: ' + (input.tenBai || '(theo video)') + (input.ca ? (' — Ca sĩ: ' + input.ca) : '') + '\n'
+    + 'Quãng giọng học viên: ' + (input.quangGiong || ((input.noteThap||'?') + ' — ' + (input.noteCao||'?'))) + '\n\n'
+    + 'Trả về tiếng Việt, các mục in đậm:\n'
+    + '**Tông gốc & quãng bài** (Nốt thấp nhất – cao nhất, tessitura)\n'
+    + '**Gợi ý dịch tông (transpose)** — so với quãng học viên, nên hạ/nâng mấy semitone\n'
+    + '**Cấu trúc bài** (Verse / Pre-chorus / Chorus / Bridge, cao trào)\n'
+    + '**Kỹ thuật trọng tâm** (Chest/Mix/Head voice, Belting, Legato, Vibrato...)\n'
+    + '**Điểm khó & lưu ý luyện tập**\n'
+    + '**Giáo án gợi ý 60 phút** (15p kỹ thuật + 45p xử lý bài)';
+
+  const link = String(input.linkYoutube || '').trim();
+  if (/youtu\.?be/.test(link)) {
+    const withVideo = geminiCall_([
+      { fileData: { fileUri: link } },
+      { text: guide + '\n\n(Hãy nghe/xem video ở link đính kèm để phân tích chính xác.)' }
+    ]);
+    if (withVideo && withVideo.indexOf('⚠️') !== 0) return withVideo;
+  }
+  return geminiCall_([{ text: guide + '\n\nLink tham khảo: ' + link }]);
+}
+
+// ===================== TIỆN ÍCH =====================
+function cleanRow_(o) {
+  const out = {};
+  Object.keys(o).forEach(function(k){
+    let v = o[k];
+    if (v instanceof Date) v = Utilities.formatDate(v, Session.getScriptTimeZone(), 'yyyy-MM-dd');
+    out[k] = v;
+  });
+  return out;
+}
+
+function getDbUrl() {
+  try {
+    return getDbSpreadsheet_(false).getUrl();
+  } catch(e) {
+    return '';
+  }
+}
+
+// ===================== SEED DATA =====================
+function seedData() {
+  const seed = [
+    {hoTen:'My',rank:'D',tinhTrang:'Đã hoàn thành',lop:'TNN',giaoVien:'Linh',ngayBatDau:'2025-11-27',soBuoiKhoa:12,soBuoiDeal:12,soBuoiDaHoc:12,soBuoiConLai:0,loaiGiong:'Nữ trung',loaiHocVien:'STUDIED_MANY',hocPhi:3500000,daDongHocPhi:true,tienMatDaThu:0,linkDrive:'https://drive.google.com/drive/folders/1yc-eR-6QjJmPXMvGn4WSrhDX5gCxVcYH'},
+    {hoTen:'An',rank:'C',tinhTrang:'Đã hoàn thành',lop:'TNN',giaoVien:'Linh',ngayBatDau:'2025-12-02',soBuoiKhoa:6,soBuoiDeal:6,soBuoiDaHoc:6,soBuoiConLai:0,loaiGiong:'Nữ cao',loaiHocVien:'STUDIED_2_TERMS',hocPhi:1750000,daDongHocPhi:true,tienMatDaThu:0,linkDrive:'https://drive.google.com/drive/folders/1mx7zB7w8k52Vdyelxy6yG8BzFDpA6Cea'},
+    {hoTen:'Chị Yên',rank:'A',tinhTrang:'Đang học',lop:'TN11',giaoVien:'Linh',ngayBatDau:'2025-12-26',ngayKhoaMoi:'2026-09-02',soBuoiKhoa:6,soBuoiDeal:6,soBuoiDaHoc:2,soBuoiConLai:4,loaiGiong:'Nữ trung',loaiHocVien:'STUDIED_2_TERMS',hocPhi:1750000,daDongHocPhi:true,tienMatDaThu:500000,linkDrive:'https://drive.google.com/drive/folders/1ijFMnhWjomA9Z_DoXbj6YrGqY69ZvuuG'},
+    {hoTen:'Kiến Quốc',rank:'C',tinhTrang:'Đang học',lop:'TN11',giaoVien:'Linh',ngayBatDau:'2026-03-11',ngayKhoaMoi:'2026-09-02',soBuoiKhoa:8,soBuoiDeal:8,soBuoiDaHoc:3,soBuoiConLai:5,loaiGiong:'Nam cao',loaiHocVien:'NEW',hocPhi:2500000,daDongHocPhi:true,tienMatDaThu:0,linkDrive:'https://drive.google.com/drive/folders/1b_AgCcSL9BdBpVgfvt9BouWyvRVEDhs7'},
+    {hoTen:'A Minh Anh',rank:'A',tinhTrang:'Đã hoàn thành',lop:'TN11',giaoVien:'Linh',ngayBatDau:'2026-03-22',soBuoiKhoa:6,soBuoiDeal:6,soBuoiDaHoc:6,soBuoiConLai:0,loaiGiong:'Nam trung',loaiHocVien:'NEW',hocPhi:1750000,daDongHocPhi:true,tienMatDaThu:0,linkDrive:'https://drive.google.com/drive/folders/1c5XAm_pRLssPHyUfcOFVZXJObyd9bmtu'},
+    {hoTen:'Anh Thuận',rank:'A',tinhTrang:'Đã hoàn thành',lop:'TN11',giaoVien:'Linh',ngayBatDau:'2026-03-12',soBuoiKhoa:6,soBuoiDeal:6,soBuoiDaHoc:6,soBuoiConLai:0,loaiGiong:'Nam trầm',loaiHocVien:'NEW',hocPhi:1750000,daDongHocPhi:true,tienMatDaThu:0,linkDrive:'https://drive.google.com/drive/folders/1FxQLUvfpd4rxR43zsJCCoOiOkk8puvnZ'},
+    {hoTen:'Giang',rank:'C',tinhTrang:'Đang học',lop:'TN11',giaoVien:'Linh',ngayBatDau:'2026-04-06',ngayKhoaMoi:'2026-09-02',soBuoiKhoa:12,soBuoiDeal:12,soBuoiDaHoc:5,soBuoiConLai:7,loaiGiong:'Nữ cao',loaiHocVien:'STUDIED_MANY',hocPhi:3500000,daDongHocPhi:true,tienMatDaThu:1000000,linkDrive:'https://drive.google.com/drive/folders/1JZ72USn6pOI0IpKnPlG_820_7Az84yMh'},
+    {hoTen:'Sơn',rank:'C',tinhTrang:'Đã học thử',lop:'TN11',giaoVien:'Linh',soBuoiKhoa:0,soBuoiDeal:0,soBuoiDaHoc:1,soBuoiConLai:0,loaiGiong:'Nam trung',loaiHocVien:'NEW',hocPhi:1750000,daDongHocPhi:false,tienMatDaThu:0},
+    {hoTen:'Bí ngô',rank:'B',tinhTrang:'Đang học',lop:'TN11',giaoVien:'Linh',ngayBatDau:'2026-06-17',ngayKhoaMoi:'2026-09-02',soBuoiKhoa:8,soBuoiDeal:8,soBuoiDaHoc:4,soBuoiConLai:4,loaiGiong:'Nữ trung',loaiHocVien:'NEW',hocPhi:2500000,daDongHocPhi:true,tienMatDaThu:0,linkDrive:'https://drive.google.com/drive/folders/102L39D7iZl7MBfMngLeXBTslTEdLaGg6'},
+    {hoTen:'Quyên Quyên',rank:'D',tinhTrang:'Đang học',lop:'TN11',giaoVien:'Linh',ngayBatDau:'2026-07-08',ngayKhoaMoi:'2026-07-08',soBuoiKhoa:8,soBuoiDeal:8,soBuoiDaHoc:2,soBuoiConLai:6,loaiGiong:'Nữ cao',loaiHocVien:'NEW',hocPhi:2500000,daDongHocPhi:false,tienMatDaThu:0,linkDrive:'https://drive.google.com/drive/folders/10OekX2G908eK8Y_qDbLoP5UCw6KECWHs'},
+    {hoTen:'Hưng',rank:'C',tinhTrang:'Đang học',lop:'TN12',giaoVien:'Quân',ngayBatDau:'2026-07-23',ngayKhoaMoi:'2026-09-02',soBuoiKhoa:8,soBuoiDeal:8,soBuoiDaHoc:3,soBuoiConLai:5,loaiGiong:'Nam cao',loaiHocVien:'NEW',hocPhi:2500000,daDongHocPhi:true,tienMatDaThu:0},
+    {hoTen:'Nhi',rank:'B',tinhTrang:'Đang học',lop:'TN11',giaoVien:'Quân',ngayBatDau:'2026-07-13',ngayKhoaMoi:'2026-07-13',soBuoiKhoa:6,soBuoiDeal:6,soBuoiDaHoc:2,soBuoiConLai:4,loaiGiong:'Nữ cao',loaiHocVien:'NEW',hocPhi:1750000,daDongHocPhi:true,tienMatDaThu:0,linkDrive:'https://drive.google.com/drive/folders/1d-mSWz59uhrR6FbYWmuRKcK1gTprkNYr'},
+    {hoTen:'Thông',rank:'A',tinhTrang:'Đang học',lop:'TN12',giaoVien:'Quân',ngayBatDau:'2026-08-22',ngayKhoaMoi:'2026-08-22',soBuoiKhoa:6,soBuoiDeal:6,soBuoiDaHoc:1,soBuoiConLai:5,loaiGiong:'Nam trung',loaiHocVien:'NEW',hocPhi:1750000,daDongHocPhi:true,tienMatDaThu:0}
+  ];
+  seed.forEach(function(s){ saveStudent(s); });
+  initDefaultUsers_();
+  Logger.log('Đã seed ' + seed.length + ' học viên & khởi tạo users.');
+}

@@ -1,0 +1,181 @@
+function taoDanhSachLichDayLinh() {
+  var sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName("XẾP LỊCH");
+  if (!sheet) {
+    SpreadsheetApp.getUi().alert("Lỗi", "Không tìm thấy trang tính 'XẾP LỊCH'.", SpreadsheetApp.getUi().ButtonSet.OK);
+    return;
+  }
+
+  // 1. Quét bảng J3:N50 để xác định học viên
+  var mappingValues = sheet.getRange("J3:N50").getValues();
+  var targetStudents = [];
+
+  for (var r = 0; r < mappingValues.length; r++) {
+    var row = mappingValues[r];
+    var studentName = row[0] ? row[0].toString().trim().toLowerCase() : "";
+    if (studentName === "") continue;
+
+    // Chỉ định đích danh cột N làm cột chứa tên Giáo viên
+    var teacherName = row[4] ? row[4].toString().trim().toLowerCase() : "";
+    
+    // Đối chiếu chính xác giáo viên Linh
+    if (teacherName === "linh") {
+      targetStudents.push(studentName);
+    }
+  }
+
+  // 2. Quét lịch từ B2:I21
+  var range = sheet.getRange("B2:I21");
+  var values = range.getValues();
+
+  var days = values[0];
+  var timeRows = values.slice(1);
+
+  var dayNames = ["Thứ 2", "Thứ 3", "Thứ 4", "Thứ 5", "Thứ 6", "Thứ 7", "Chủ nhật"];
+  var schedule = {};
+  dayNames.forEach(function(day) {
+    schedule[day] = [];
+  });
+
+  for (var i = 0; i < timeRows.length; i++) {
+    var time = timeRows[i][0] ? timeRows[i][0].toString().trim() : "";
+    if (time === "") continue;
+
+    for (var j = 1; j < 8; j++) {
+      var cellValue = timeRows[i][j] ? timeRows[i][j].toString().trim() : "";
+      var day = days[j] ? days[j].toString().trim() : "";
+
+      if (cellValue !== "" && cellValue !== "-" && cellValue.toLowerCase().indexOf("trống") === -1) {
+        var cellLower = cellValue.toLowerCase();
+        var matched = false;
+        
+        // Tách chuỗi bằng dấu "+" và kiểm tra từng tên học viên
+        var namesInCell = cellLower.split("+");
+        for (var n = 0; n < namesInCell.length; n++) {
+          var singleName = namesInCell[n].trim();
+          if (targetStudents.indexOf(singleName) !== -1) {
+            matched = true;
+            break; 
+          }
+        }
+
+        if (matched) {
+          if (schedule[day]) {
+            schedule[day].push({
+              time: time,
+              student: cellValue
+            });
+          }
+        }
+      }
+    }
+  }
+
+  // 3. Xử lý xuất kết quả và thêm trực tiếp vào Calendar đích
+  var today = new Date();
+  var currentDay = today.getDay();
+  
+  // Tính toán số ngày cần cộng thêm để đến Thứ 2 của TUẦN TIẾP THEO
+  // Nếu hôm nay là Chủ nhật (0), Thứ 2 tuần sau là ngày mai (+1 ngày)
+  // Nếu hôm nay là ngày khác, lấy 8 trừ đi số thứ tự ngày hiện tại
+  var daysUntilNextMonday = (currentDay === 0) ? 1 : (8 - currentDay);
+  
+  var mondayDate = new Date(today);
+  mondayDate.setDate(today.getDate() + daysUntilNextMonday);
+
+  var output = "Danh sách lịch dạy của giáo viên Linh tuần sau:\n";
+  var hasClasses = false;
+
+  dayNames.forEach(function(day, index) {
+    if (schedule[day].length > 0) {
+      hasClasses = true;
+      var targetDate = new Date(mondayDate);
+      targetDate.setDate(mondayDate.getDate() + index);
+
+      var dateString = Utilities.formatDate(targetDate, Session.getScriptTimeZone(), "dd/MM/yyyy");
+
+      output += "\n  - " + day + " (" + dateString + "):\n";
+      schedule[day].forEach(function(item) {
+        output += "      - " + item.time + ": " + item.student + "\n";
+      });
+    }
+  });
+
+  var ui = SpreadsheetApp.getUi();
+
+  if (!hasClasses) {
+    ui.alert("Thông báo", "Không có lịch dạy nào trong tuần sau.", ui.ButtonSet.OK);
+    return;
+  }
+
+  output += "\n\nXác nhận tạo lịch tuần sau trực tiếp vào Google Calendar của quanglinhvocal1410@gmail.com?";
+
+  var response = ui.alert(
+    "Xác nhận thêm vào lịch",
+    output,
+    ui.ButtonSet.YES_NO
+  );
+
+  if (response == ui.Button.YES) {
+    
+    // Khởi tạo truy cập trực tiếp vào Calendar đích
+    var targetCalendarId = "quanglinhvocal1410@gmail.com";
+    var calendar = CalendarApp.getCalendarById(targetCalendarId);
+    
+    if (!calendar) {
+      ui.alert("Lỗi phân quyền", "Không thể truy cập lịch của " + targetCalendarId + ". Yêu cầu chủ sở hữu email này cấp quyền 'Thực hiện thay đổi đối với sự kiện' cho tài khoản đang chạy mã lệnh.", ui.ButtonSet.OK);
+      return;
+    }
+
+    var errorLogs = [];
+
+    dayNames.forEach(function(day, index) {
+      if (schedule[day].length > 0) {
+        var targetDate = new Date(mondayDate);
+        targetDate.setDate(mondayDate.getDate() + index);
+
+        schedule[day].forEach(function(item) {
+          try {
+            var timeParts = item.time.split("-");
+            if (timeParts.length === 2) {
+              var startStr = timeParts[0].trim().toLowerCase().replace("h", ":");
+              var endStr = timeParts[1].trim().toLowerCase().replace("h", ":");
+
+              var startHM = startStr.split(":");
+              var endHM = endStr.split(":");
+
+              var startHour = parseInt(startHM[0], 10) || 0;
+              var startMinute = parseInt(startHM[1], 10) || 0;
+
+              var endHour = parseInt(endHM[0], 10) || 0;
+              var endMinute = parseInt(endHM[1], 10) || 0;
+
+              var startTime = new Date(targetDate);
+              startTime.setHours(startHour, startMinute, 0, 0);
+
+              var endTime = new Date(targetDate);
+              endTime.setHours(endHour, endMinute, 0, 0);
+
+              if (endTime <= startTime) {
+                errorLogs.push("Lỗi logic thời gian tại học viên " + item.student + " (" + item.time + ")");
+                return;
+              }
+
+              var eventTitle = "Lịch dạy Linh: " + item.student;
+              
+              // Tạo sự kiện trực tiếp trên lịch đích, không sử dụng addGuest
+              calendar.createEvent(eventTitle, startTime, endTime);
+            }
+          } catch (e) {
+            errorLogs.push("Lỗi xử lý hệ thống: " + item.student + " - " + e.toString());
+          }
+        });
+      }
+    });
+
+    if (errorLogs.length > 0) {
+      ui.alert("Cảnh báo", "Quá trình hoàn tất với một số lỗi ngoại lệ:\n" + errorLogs.join("\n"), ui.ButtonSet.OK);
+    } else {
+      ui.alert("Thông báo", "Toàn bộ lịch dạy tuần sau đã được tạo trực tiếp trên Google Calendar của quanglinhvocal1410@gmail.com thành công.", ui.ButtonSet.OK);
+    }
+  }
+}

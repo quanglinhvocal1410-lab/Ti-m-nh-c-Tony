@@ -1,0 +1,52 @@
+// Mở hộp thoại HTML
+function hienThiHopThoai() {
+  var html = HtmlService.createHtmlOutputFromFile('Index')
+      .setWidth(350)
+      .setHeight(250);
+  SpreadsheetApp.getUi().showModalDialog(html, 'Tra cứu lịch học viên');
+}
+
+// Hàm lấy danh sách học viên từ I4:I1000
+function layDanhSachHocVien() {
+  var sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName('XẾP LỊCH');
+  var data = sheet.getRange('j4:j100').getValues();
+  var students = [];
+  
+  for (var i = 0; i < data.length; i++) {
+    var name = data[i][0];
+    // Chỉ lấy những ô có dữ liệu và loại bỏ trùng lặp
+    if (name && name.toString().trim() !== '') {
+      var cleanName = name.toString().trim();
+      if (students.indexOf(cleanName) === -1) {
+        students.push(cleanName);
+      }
+    }
+  }
+  return students;
+}
+
+// Hàm tìm lịch dựa trên tên được chọn
+function timLich(studentName) {
+  var sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName('XẾP LỊCH');
+  var data = sheet.getRange('A2:I21').getValues(); // Vùng chứa lịch học
+  var days = data[0]; // Dòng Thứ (A2:I2)
+  var schedule = [];
+  
+  var searchName = studentName.toLowerCase();
+
+  for (var r = 1; r < data.length; r++) {
+    var timeSlot = data[r][1]; // Lấy dữ liệu ở Cột B (Thứ/Giờ)
+    for (var c = 2; c <= 8; c++) { // Quét từ Cột C (Thứ 2) đến I (Chủ nhật)
+      var cellValue = String(data[r][c]).toLowerCase();
+      if (cellValue.indexOf(searchName) !== -1) {
+        schedule.push('- ' + days[c] + ': ' + timeSlot);
+      }
+    }
+  }
+
+  if (schedule.length > 0) {
+    return 'Lịch học của "' + studentName + '":\n' + schedule.join('\n');
+  } else {
+    return 'Không có lịch học tuần này cho: ' + studentName;
+  }
+}

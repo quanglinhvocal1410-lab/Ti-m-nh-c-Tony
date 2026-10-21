@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="vi">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Demo — Lộ trình khóa học</title>
+<style>
+  :root{--bg:#070d0a;--bg2:#0f1813;--card:#132018;--line:#223629;--gold:#C5A059;--teal:#34D399;--mut:#8ea696;--txt:#ebf3ec;--green:#285137}
+  *{box-sizing:border-box}
+  body{background:var(--bg);color:var(--txt);font-family:'Be Vietnam Pro',Arial,sans-serif;padding:20px;font-size:13.5px;margin:0}
+  .wrap{max-width:920px;margin:0 auto}
+  .panel{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:18px}
+  .badge{display:inline-block;padding:3px 8px;border-radius:20px;font-size:11px;font-weight:700}
+  .three{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:14px}
+  h2,h3{margin:0}
+  select{background:#0c130f;border:1px solid var(--line);color:var(--txt);padding:8px 10px;border-radius:8px;font-family:inherit}
+  details>summary{list-style:none}
+  details>summary::-webkit-details-marker{display:none}
+  a{color:var(--teal)}
+  small{color:var(--mut)}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h2 style="color:var(--gold);margin-bottom:6px">🧭 Demo — Lộ trình khóa học</h2>
+  <p style="color:var(--mut);margin-top:0">Xem thử giao diện lộ trình (dữ liệu mẫu). Trong app thật, phần này nằm ở <b>Hồ sơ học viên → tab 🧭 Lộ trình</b>.</p>
+  <div style="margin:12px 0;display:flex;gap:14px;align-items:center;flex-wrap:wrap">
+    <label>Rank thử: <select id="rk" onchange="go()"><option>A</option><option selected>B</option><option>C</option><option>D</option></select></label>
+    <small>(Ô "Mục tiêu học" bên trong sẽ cắt ngắn/dài lộ trình)</small>
+  </div>
+  <div id="roadmapBox"></div>
+</div>
+
+<!-- Stub tối thiểu các hàm app có sẵn để chạy module ngoài app -->
+<script>
+  function $(id){ return document.getElementById(id); }
+  function esc(s){ return String(s==null?'':s).replace(/[<>&]/g,function(c){return {'<':'&lt;','>':'&gt;','&':'&amp;'}[c];}); }
+  function courseInfo(s){ return { size:8, done:3, left:5, so:1 }; }  // dữ liệu mẫu
+</script>
+<!-- Module lộ trình (cùng thư mục) -->
+<script src="lo-trinh-hoc-vien.js"></script>
+<script>
+  function go(){
+    renderCourseRoadmap('roadmapBox', { id:'DEMO', hoTen:'Học viên mẫu', rank: $('rk').value });
+  }
+  go();
+</script>
+</body>
+</html>

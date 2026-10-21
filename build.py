@@ -1,0 +1,111 @@
+import os
+
+def esc(s):
+    return s.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
+
+# 1. Build preview.html
+with open('build_preview.js', 'r', encoding='utf-8') as f:
+    bp = f.read()
+
+mb_start = bp.find('const mockBackend = `') + len('const mockBackend = `')
+mb_end = bp.find('`;\n\n// ===== Xây dựng preview.html =====')
+mock_backend = bp[mb_start:mb_end]
+
+pb_start = bp.find('const previewBanner = `') + len('const previewBanner = `')
+pb_end = bp.find('`;\n\npreviewHtml = previewHtml.replace')
+preview_banner = bp[pb_start:pb_end]
+
+with open('index.txt', 'r', encoding='utf-8') as f:
+    idx = f.read()
+with open('Stylesheet.html', 'r', encoding='utf-8') as f:
+    style = f.read()
+with open('JavaScript.html', 'r', encoding='utf-8') as f:
+    js = f.read()
+with open('Code.txt', 'r', encoding='utf-8') as f:
+    code = f.read()
+
+preview_html = idx.replace("<?!= HtmlService.createHtmlOutputFromFile('Stylesheet').getContent(); ?>", style)
+preview_html = preview_html.replace("<?!= HtmlService.createHtmlOutputFromFile('JavaScript').getContent(); ?>", mock_backend + '\n' + js)
+preview_html = preview_html.replace('<body>', '<body>\n' + preview_banner)
+
+with open('preview.html', 'w', encoding='utf-8') as f:
+    f.write(preview_html)
+print('✅ preview.html generated! Size:', len(preview_html))
+
+# 2. Build helper.html
+helper_template = """<!DOCTYPE html>
+<html lang="vi">
+<head>
+  <meta charset="utf-8">
+  <title>Deployment Helper - Tony Music Academy</title>
+  <style>
+    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: #070d0a; color: #ebf3ec; padding: 24px; max-width: 1000px; margin: 0 auto; line-height: 1.5; }
+    h1 { color: #C5A059; font-size: 24px; margin-bottom: 8px; }
+    .guide-box { background: #132018; border: 1px solid #223629; border-radius: 12px; padding: 16px; margin-bottom: 24px; }
+    .card { background: #0e1712; border: 1px solid #223629; border-radius: 10px; padding: 16px; margin-bottom: 20px; }
+    .card h2 { font-size: 16px; color: #34D399; margin-bottom: 8px; display: flex; justify-content: space-between; align-items: center; }
+    textarea { width: 100%; height: 160px; background: #060a08; color: #a7f3d0; border: 1px solid #1c2b21; border-radius: 8px; padding: 10px; font-family: Consolas, Monaco, monospace; font-size: 12px; box-sizing: border-box; resize: vertical; }
+    .btn-copy { background: linear-gradient(135deg, #C5A059, #e0be77); color: #161005; font-weight: 700; padding: 6px 14px; border: none; border-radius: 6px; cursor: pointer; font-size: 12.5px; transition: .15s; }
+    .btn-copy:hover { transform: translateY(-1px); }
+    .btn-link { color: #38bdf8; text-decoration: none; font-weight: 600; }
+  </style>
+</head>
+<body>
+  <h1>📦 Sẵn sàng Deploy vào Google Apps Script</h1>
+  <div class="guide-box">
+    <p>🔗 <b>Link Apps Script:</b> <a class="btn-link" href="https://script.google.com/u/0/home/projects/1vw_NR_CFz5BZ40owI4a-s-HPwUO_Li9DfSPnnesmuNPu0EoBkya3n42G/edit" target="_blank">Mở Apps Script Project Editor</a></p>
+    <p style="color:#8ea696;font-size:13px;margin-top:6px">👉 Bấm nút <b>Copy</b> từng file bên dưới, sau đó dán (Ctrl+A, Ctrl+V) vào file tương ứng trên Apps Script, bấm Lưu và Tạo Phiên bản triển khai mới.</p>
+  </div>
+
+  <div class="card">
+    <h2>
+      <span>1. Mã.gs (hoặc Code.gs)</span>
+      <button class="btn-copy" onclick="copyText('code')">📋 Copy Mã.gs</button>
+    </h2>
+    <textarea id="code" readonly>__CODE__</textarea>
+  </div>
+
+  <div class="card">
+    <h2>
+      <span>2. Index.html</span>
+      <button class="btn-copy" onclick="copyText('index')">📋 Copy Index.html</button>
+    </h2>
+    <textarea id="index" readonly>__INDEX__</textarea>
+  </div>
+
+  <div class="card">
+    <h2>
+      <span>3. Stylesheet.html</span>
+      <button class="btn-copy" onclick="copyText('style')">📋 Copy Stylesheet.html</button>
+    </h2>
+    <textarea id="style" readonly>__STYLE__</textarea>
+  </div>
+
+  <div class="card">
+    <h2>
+      <span>4. JavaScript.html</span>
+      <button class="btn-copy" onclick="copyText('js')">📋 Copy JavaScript.html</button>
+    </h2>
+    <textarea id="js" readonly>__JS__</textarea>
+  </div>
+
+  <script>
+    function copyText(id) {
+      const el = document.getElementById(id);
+      el.select();
+      navigator.clipboard.writeText(el.value).then(function(){
+        alert('✅ Đã copy mã nguồn ' + id + ' vào Clipboard!');
+      });
+    }
+  </script>
+</body>
+</html>"""
+
+helper_html = helper_template.replace('__CODE__', esc(code))\
+                             .replace('__INDEX__', esc(idx))\
+                             .replace('__STYLE__', esc(style))\
+                             .replace('__JS__', esc(js))
+
+with open('helper.html', 'w', encoding='utf-8') as f:
+    f.write(helper_html)
+print('✅ helper.html generated! Size:', len(helper_html))

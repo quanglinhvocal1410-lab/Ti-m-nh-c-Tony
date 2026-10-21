@@ -1,0 +1,4205 @@
+<script>
+// ==================== GLOBAL STATE & CACHE ====================
+let ALL_STUDENTS = [];
+let ALL_USERS = [];
+let CUR_STUDENT = null;
+let CURRENT_USER = null;
+let CACHE_STUDENTS_DETAIL = {};
+let CURRENT_VIEW_MODE = localStorage.getItem('tony_view_mode') || 'card';
+
+// Studio Classroom State
+let STUDIO_SESSION_SCORE = 8;
+let MEDIA_RECORDER = null;
+let AUDIO_CHUNKS = [];
+let RECORD_TIMER_INT = null;
+let RECORD_SECONDS = 0;
+
+const $ = function(id){ return document.getElementById(id); };
+
+function toast(m){
+  const t = $('toast');
+  t.textContent = m;
+  t.classList.add('on');
+  setTimeout(function(){ t.classList.remove('on'); }, 2400);
+}
+function open_(id){ $(id).classList.add('on'); }
+function close_(id){ $(id).classList.remove('on'); }
+function esc(s){ return String(s==null?'':s).replace(/[<>&]/g,function(c){return{'<':'&lt;','>':'&gt;','&':'&amp;'}[c];}); }
+function mdBold(s){ return esc(s).replace(/\*\*(.+?)\*\*/g,'<strong>$1</strong>'); }
+
+function fmtDate(d) {
+  if (!d) return '—';
+  if (typeof d === 'string') {
+    d = d.trim();
+    if (!d) return '—';
+    if (/^\d{2}\/\d{2}\/\d{4}$/.test(d)) return d;
+    if (d.indexOf('-') > 0) {
+      const parts = d.split('T')[0].split('-');
+      if (parts.length === 3) {
+        if (parts[0].length === 4) return parts[2] + '/' + parts[1] + '/' + parts[0];
+        if (parts[2].length === 4) return parts[0] + '/' + parts[1] + '/' + parts[2];
+      }
+    }
+    const dt = new Date(d);
+    if (!isNaN(dt.getTime())) {
+      const day = String(dt.getDate()).padStart(2, '0');
+      const mon = String(dt.getMonth() + 1).padStart(2, '0');
+      const yr  = dt.getFullYear();
+      return day + '/' + mon + '/' + yr;
+    }
+    return d;
+  }
+  if (d instanceof Date && !isNaN(d.getTime())) {
+    const day = String(d.getDate()).padStart(2, '0');
+    const mon = String(d.getMonth() + 1).padStart(2, '0');
+    const yr  = d.getFullYear();
+    return day + '/' + mon + '/' + yr;
+  }
+  return String(d);
+}
+
+// ==================== AVATAR HELPERS ====================
+function getInitials(name) {
+  if (!name) return 'HV';
+  const parts = String(name).trim().split(/\s+/);
+  if (parts.length === 1) return parts[0].slice(0, 2).toUpperCase();
+  return (parts[0][0] + parts[parts.length - 1][0]).toUpperCase();
+}
+
+function getAvatarHtml(s, sizeClass) {
+  const rank = String(s.rank || 'A').toUpperCase();
+  const rkBorder = 'rk-border-' + rank;
+  const cls = 'st-avatar ' + rkBorder + ' ' + (sizeClass || '');
+  if (s.avatar && String(s.avatar).trim().length > 5) {
+    return '<div class="' + cls + '" style="background-image:url(\'' + esc(s.avatar) + '\');background-size:cover;background-position:center;background-repeat:no-repeat;"></div>';
+  }
+  return '<div class="' + cls + '">' + esc(getInitials(s.hoTen)) + '</div>';
+}
+
+function updateAvatarPreview(url) {
+  const box = $('avatarPreviewBox');
+  if (url && String(url).trim().length > 5) {
+    box.style.backgroundImage = "url('" + url + "')";
+    box.style.backgroundSize = "cover";
+    box.style.backgroundPosition = "center";
+    box.textContent = '';
+  } else {
+    box.style.backgroundImage = 'none';
+    box.textContent = getInitials($('f_hoTen').value);
+  }
+}
+
+function updateInitialsAvatar(name) {
+  if (!$('f_avatar').value) {
+    const box = $('avatarPreviewBox');
+    box.style.backgroundImage = 'none';
+    box.textContent = getInitials(name);
+  }
+}
+
+function handleAvatarFileSelect(input) {
+  if (input.files && input.files[0]) {
+    const file = input.files[0];
+    const reader = new FileReader();
+    reader.onload = function(e) {
+      const img = new Image();
+      img.onload = function() {
+        const canvas = document.createElement('canvas');
+        const maxSize = 220; // Nén kích thước chuẩn avatar tròn 220px siêu nhẹ (<10KB)
+        let w = img.width;
+        let h = img.height;
+        if (w > h) {
+          if (w > maxSize) {
+            h = Math.round((h * maxSize) / w);
+            w = maxSize;
+          }
+        } else {
+          if (h > maxSize) {
+            w = Math.round((w * maxSize) / h);
+            h = maxSize;
+          }
+        }
+        canvas.width = w;
+        canvas.height = h;
+        const ctx = canvas.getContext('2d');
+        ctx.drawImage(img, 0, 0, w, h);
+        const compressedDataUrl = canvas.toDataURL('image/jpeg', 0.85);
+        $('f_avatar').value = compressedDataUrl;
+        updateAvatarPreview(compressedDataUrl);
+        toast('✅ Đã nạp & tối ưu ảnh đại diện');
+      };
+      img.src = e.target.result;
+    };
+    reader.readAsDataURL(file);
+  }
+}
+
+function removeAvatar() {
+  $('f_avatar').value = '';
+  $('f_avatar_file').value = '';
+  const box = $('avatarPreviewBox');
+  box.style.backgroundImage = 'none';
+  box.textContent = getInitials($('f_hoTen').value);
+  toast('Đã xoá ảnh đại diện');
+}
+
+// ==================== VIEW SWITCHER (CARD / GRID / TABLE) ====================
+function switchStudentView(mode) {
+  CURRENT_VIEW_MODE = mode;
+  localStorage.setItem('tony_view_mode', mode);
+
+  $('btnViewCard').classList.toggle('active', mode === 'card');
+  $('btnViewGrid').classList.toggle('active', mode === 'grid');
+  $('btnViewTable').classList.toggle('active', mode === 'table');
+
+  $('studentCardsContainer').style.display = mode === 'card' ? 'grid' : 'none';
+  $('studentGridContainer').style.display  = mode === 'grid' ? 'grid' : 'none';
+  $('studentTableContainer').style.display = mode === 'table' ? 'block' : 'none';
+
+  renderStudents();
+}
+
+// ==================== ĐIỀU HƯỚNG TỔNG QUAN ====================
+const MAIN_VIEW_IDS = ['dashboard', 'schedule', 'students', 'trial', 'tuition', 'settings', 'student-profile', 'classroom-flow'];
+
+function showOnlyView(name) {
+  MAIN_VIEW_IDS.forEach(function(v){
+    const el = $('view-' + v);
+    if (el) el.style.display = (v === name) ? 'block' : 'none';
+  });
+}
+
+function navigateTo(v) {
+  const a = document.querySelector('.nav a[data-view="' + v + '"]');
+  if (a) a.onclick();
+}
+
+document.querySelectorAll('.nav a').forEach(function(a){
+  a.onclick = function(){
+    const v = a.dataset.view;
+    if (v === 'settings' && !hasPerm('settings', 'view')) {
+      toast('⚠️ Bạn không có quyền truy cập mục Cấu hình');
+      return;
+    }
+    if (v === 'tuition' && !isAdmin()) {
+      toast('⚠️ Chỉ Admin mới xem được Học phí & Quyết toán');
+      return;
+    }
+    document.querySelectorAll('.nav a').forEach(function(x){ x.classList.remove('active'); });
+    a.classList.add('active');
+
+    showOnlyView(v);
+    $('mainSidebar').style.display          = 'flex';
+    document.body.style.paddingLeft         = '240px';
+
+    if (v === 'dashboard') loadDashboard();
+    if (v === 'students')  loadStudents();
+    if (v === 'trial')     loadStudents();
+    if (v === 'schedule')  { if (!SCHEDULE_DATA) loadScheduleSheet(); }
+    if (v === 'tuition')   loadTuitionSettlement();
+    if (v === 'settings')  loadSettingsView();
+  };
+});
+
+// Profile Tabs
+document.querySelectorAll('.profile-header-bar + .profile-hero + .profile-quick-info + .tabs button').forEach(function(b){
+  b.onclick = function(){
+    document.querySelectorAll('.profile-header-bar + .profile-hero + .profile-quick-info + .tabs button').forEach(function(x){ x.classList.remove('active'); });
+    b.classList.add('active');
+    document.querySelectorAll('.ptabpane').forEach(function(p){ p.style.display = 'none'; });
+    $('ptab-' + b.dataset.ptab).style.display = 'block';
+    if (b.dataset.ptab === 'pprog' && CUR_STUDENT) renderProgressCharts(CUR_STUDENT.buoiHoc || []);
+  };
+});
+
+// ==================== PHÂN QUYỀN ====================
+function hasPerm(module, act) {
+  if (!CURRENT_USER) return true;
+  if (CURRENT_USER.role === 'admin') return true;
+  const p = CURRENT_USER.permissions || {};
+  if (p[module] && p[module][act]) return true;
+  return false;
+}
+
+function isAdmin() {
+  return !!(CURRENT_USER && CURRENT_USER.role === 'admin');
+}
+
+function updateUiByPermissions() {
+  document.body.classList.toggle('is-admin', isAdmin());
+  if (!isAdmin() && $('view-tuition') && $('view-tuition').style.display === 'block') navigateTo('dashboard');
+  const canAddSt = hasPerm('students', 'edit');
+  if ($('btnAddNewStudent')) $('btnAddNewStudent').style.display = canAddSt ? 'inline-flex' : 'none';
+  const canDeleteSt = hasPerm('students', 'delete');
+  if ($('btnDeleteStProfile')) $('btnDeleteStProfile').style.display = canDeleteSt ? 'inline-flex' : 'none';
+  if ($('btnDeleteSelectedStudents')) $('btnDeleteSelectedStudents').style.display = canDeleteSt ? 'inline-flex' : 'none';
+}
+
+function switchCurrentUser() {
+  const selId = $('curUserSelect').value;
+  CURRENT_USER = ALL_USERS.find(function(u){ return String(u.id) === String(selId); }) || ALL_USERS[0];
+  if (CURRENT_USER) {
+    $('curUserRoleBadge').textContent = (CURRENT_USER.role === 'admin' ? 'Admin' : 'Giảng viên') + ' · ' + CURRENT_USER.hoTen;
+    updateUiByPermissions();
+    toast('Đã chuyển sang tài khoản: ' + CURRENT_USER.hoTen);
+  }
+}
+
+// ==================== DASHBOARD ====================
+function loadDashboard(){
+  google.script.run.withSuccessHandler(function(d){
+    const cards = [
+      ['g', d.tong, 'Tổng học viên'],
+      ['t', d.dangHoc, 'Đang học'],
+      ['o', d.hoanThanh, 'Đã hoàn thành'],
+      ['r', d.nghi, 'Đã nghỉ'],
+      ['m', d.hocThu, 'Học thử']
+    ];
+    $('statCards').innerHTML = cards.map(function(c){
+      return '<div class="stat ' + c[0] + '"><span class="bar"></span><div class="n">' + c[1] + '</div><div class="l">' + c[2] + '</div></div>';
+    }).join('');
+    const rc = { A:'#C5A059', B:'#34D399', C:'#6bb0e0', D:'#b78fe0' };
+    $('rankChart').innerHTML = barChart(d.byRank, rc);
+    $('lopChart').innerHTML  = barChart(d.byLop, null);
+  }).getDashboard();
+}
+
+function barChart(obj, colors){
+  const keys = Object.keys(obj);
+  if (!keys.length) return '<div class="empty">Chưa có dữ liệu</div>';
+  const max = Math.max.apply(null, keys.map(function(k){ return obj[k]; })) || 1;
+  const pal = ['#3A5A42', '#4d7358', '#C5A059', '#34D399', '#6bb0e0', '#b78fe0'];
+  return keys.map(function(k, i){
+    const col = colors ? (colors[k] || pal[i % pal.length]) : pal[i % pal.length];
+    const w = Math.max(8, Math.round(obj[k] / max * 100));
+    return '<div class="brow"><div class="k">' + esc(k) + '</div><div class="track">' +
+      '<div class="fill" style="width:' + w + '%;background:' + col + '">' + obj[k] + '</div></div></div>';
+  }).join('');
+}
+
+// ==================== HỌC VIÊN: DANH SÁCH ====================
+function loadStudents(){
+  google.script.run.withSuccessHandler(function(list){
+    ALL_STUDENTS = list || [];
+    renderStudents();
+    renderTrialList();
+  }).getStudents();
+}
+
+// HV học thử / chờ phản hồi / từ chối → chỉ hiện ở tab Học thử
+function isTrialStudent(s) {
+  const ts = String(s.trialStatus || '').trim();
+  if (ts) return ts !== 'confirmed';
+  const st = String(s.tinhTrang || '');
+  return st.indexOf('thử') >= 0 || st.indexOf('Chờ phản hồi') >= 0 || st.indexOf('Từ chối') >= 0;
+}
+
+function getOfficialStudents() {
+  return ALL_STUDENTS.filter(function(s){ return !isTrialStudent(s); });
+}
+
+function stBadge(st){
+  st = String(st || '');
+  let c = 'st-thu';
+  if (st.indexOf('Đang') >= 0) c = 'st-hoc';
+  else if (st.indexOf('hoàn thành') >= 0) c = 'st-done';
+  else if (st.indexOf('nghỉ') >= 0 || st.indexOf('Nghỉ') >= 0) c = 'st-nghi';
+  return '<span class="badge ' + c + '">' + esc(st) + '</span>';
+}
+
+function renderStudents(){
+  const q = ($('search').value || '').toLowerCase();
+  const rkFilter = $('filterRank').value;
+
+  const official = getOfficialStudents();
+  const list = official.filter(function(s){
+    const matchQ = (String(s.hoTen) + ' ' + String(s.lop) + ' ' + String(s.giaoVien) + ' ' + String(s.loaiGiong)).toLowerCase().indexOf(q) >= 0;
+    const matchRk = !rkFilter || String(s.rank).toUpperCase() === rkFilter.toUpperCase();
+    return matchQ && matchRk;
+  });
+
+  $('stCount').textContent = official.length + ' học viên · hiện ' + list.length;
+  $('stEmpty').style.display = list.length ? 'none' : 'block';
+
+  if (CURRENT_VIEW_MODE === 'card') {
+    renderCardsView(list);
+  } else if (CURRENT_VIEW_MODE === 'grid') {
+    renderGridView(list);
+  } else {
+    renderTableView(list);
+  }
+  updateSelectedStudentCount();
+}
+
+function renderCardsView(list) {
+  const canDelete = hasPerm('students', 'delete');
+  $('studentCardsContainer').innerHTML = list.map(function(s){
+    const rk = s.rank || 'A';
+    const total = parseInt(s.soBuoiKhoa || s.soBuoiDeal, 10) || 12;
+    const done = parseInt(s.soBuoiDaHoc, 10) || 0;
+    const pct = Math.min(100, Math.round((done / Math.max(total, 1)) * 100));
+    const left = s.soBuoiConLai != null ? s.soBuoiConLai : Math.max(0, total - done);
+
+    let alertTag = '';
+    let renewAction = '';
+    if (left <= 0) {
+      alertTag = '<span class="badge-danger-pulse">🚨 Hết buổi</span>';
+      renewAction = '<button class="btn-renew" style="padding:4px 10px;font-size:11.5px" onclick="event.stopPropagation();openRenewModal(\'' + s.id + '\')">⚡ Gia hạn</button>';
+    } else if (left === 1) {
+      alertTag = '<span class="badge-warning-pulse">⚠️ Còn 1 buổi</span>';
+      renewAction = '<button class="btn-renew" style="padding:4px 10px;font-size:11.5px" onclick="event.stopPropagation();openRenewModal(\'' + s.id + '\')">⚡ Gia hạn</button>';
+    }
+
+    const driveBtn = s.linkDrive && s.linkDrive.indexOf('http') === 0
+      ? '<a href="' + esc(s.linkDrive) + '" target="_blank" onclick="event.stopPropagation()" class="btn sm ghost" style="padding:3px 8px;font-size:11px">📁 Drive</a>'
+      : '';
+
+    const deleteBtnHtml = canDelete
+      ? '<button class="btn sm ghost danger" title="Xoá học viên" onclick="event.stopPropagation();deleteSingleStudent(\'' + s.id + '\',\'' + esc(s.hoTen) + '\')">🗑 Xoá</button>'
+      : '';
+
+    return '<div class="st-card" style="position:relative" onclick="openStudentProfile(\'' + s.id + '\')">' +
+      '<div class="st-card-chk-wrap">' +
+        '<input type="checkbox" class="st-chk" value="' + s.id + '" onchange="updateSelectedStudentCount()" onclick="event.stopPropagation()">' +
+      '</div>' +
+      '<div>' +
+        '<div class="st-card-header" style="padding-left:24px">' +
+          '<div class="st-avatar-wrap">' +
+            getAvatarHtml(s) +
+            '<span class="badge rk-' + rk + ' st-rank-badge-floated">Rank ' + rk + '</span>' +
+          '</div>' +
+          '<div class="st-card-info">' +
+            '<h3>' + esc(s.hoTen) + '</h3>' +
+            '<p>' + esc(s.loaiGiong || 'Chưa chọn giọng') + ' · Lớp <b>' + esc(s.lop || '—') + '</b></p>' +
+            '<div style="margin-top:4px;display:flex;gap:6px;align-items:center;flex-wrap:wrap">' + 
+              stBadge(s.tinhTrang) + 
+              alertTag +
+            '</div>' +
+          '</div>' +
+        '</div>' +
+
+        '<div class="st-progress-box">' +
+          '<div class="st-prog-header">' +
+            '<span>Tiến độ: <b>' + done + '/' + total + ' buổi</b></span>' +
+            (left <= 1 ? (left <= 0 ? '<b style="color:var(--danger)">Hết buổi</b>' : '<b style="color:var(--warn)">Còn đúng 1 buổi</b>') : '<span style="color:var(--gold)">Còn ' + left + ' buổi</span>') +
+          '</div>' +
+          '<div class="st-prog-bar"><div class="st-prog-fill" style="width:' + pct + '%"></div></div>' +
+        '</div>' +
+
+        '<div class="st-tags">' +
+          (s.quangGiong ? '<span class="st-tag">🎙 ' + esc(s.quangGiong) + '</span>' : '') +
+          (s.noteChuyenGiong ? '<span class="st-tag">⚡ ' + esc(s.noteChuyenGiong) + '</span>' : '') +
+          '<span class="st-tag">👨‍🏫 GV ' + esc(s.giaoVien || 'Linh') + '</span>' +
+        '</div>' +
+      '</div>' +
+
+      '<div class="st-card-actions">' +
+        '<span style="color:var(--mut);font-size:11.5px">Bắt đầu: <b>' + fmtDate(s.ngayBatDau) + '</b></span>' +
+        '<div class="row-flex" style="gap:6px">' +
+          renewAction +
+          driveBtn +
+          '<button class="btn sm ghost" onclick="event.stopPropagation();openStudentModalFast(\'' + s.id + '\')">✏ Sửa</button>' +
+          deleteBtnHtml +
+        '</div>' +
+      '</div>' +
+    '</div>';
+  }).join('');
+}
+
+function renderGridView(list) {
+  const canDelete = hasPerm('students', 'delete');
+  $('studentGridContainer').innerHTML = list.map(function(s){
+    const rk = s.rank || 'A';
+    const total = parseInt(s.soBuoiKhoa || s.soBuoiDeal, 10) || 12;
+    const done = parseInt(s.soBuoiDaHoc, 10) || 0;
+    const pct = Math.min(100, Math.round((done / Math.max(total, 1)) * 100));
+    const left = s.soBuoiConLai != null ? s.soBuoiConLai : Math.max(0, total - done);
+
+    let alertTag = '';
+    if (left <= 0) {
+      alertTag = '<div style="margin-top:4px"><span class="badge-danger-pulse">🚨 Hết buổi</span></div>';
+    } else if (left === 1) {
+      alertTag = '<div style="margin-top:4px"><span class="badge-warning-pulse">⚠️ Còn 1 buổi</span></div>';
+    }
+
+    const deleteBtnHtml = canDelete
+      ? '<button class="btn sm ghost danger" style="padding:2px 6px;font-size:11px;margin-top:6px" title="Xoá học viên" onclick="event.stopPropagation();deleteSingleStudent(\'' + s.id + '\',\'' + esc(s.hoTen) + '\')">🗑 Xoá</button>'
+      : '';
+
+    return '<div class="st-grid-item" style="position:relative" onclick="openStudentProfile(\'' + s.id + '\')">' +
+      '<div class="st-card-chk-wrap">' +
+        '<input type="checkbox" class="st-chk" value="' + s.id + '" onchange="updateSelectedStudentCount()" onclick="event.stopPropagation()">' +
+      '</div>' +
+      getAvatarHtml(s) +
+      '<h4>' + esc(s.hoTen) + '</h4>' +
+      '<p style="font-size:12px;color:var(--mut);margin-bottom:8px">Lớp ' + esc(s.lop || '—') + ' · <span class="badge rk-' + rk + '">' + rk + '</span></p>' +
+      '<div class="st-prog-bar" style="margin-bottom:6px"><div class="st-prog-fill" style="width:' + pct + '%"></div></div>' +
+      '<small style="color:var(--mut);font-size:11px">' + done + '/' + total + ' buổi (còn ' + left + ')' + '</small>' +
+      alertTag +
+      deleteBtnHtml +
+    '</div>';
+  }).join('');
+}
+
+function renderTableView(list) {
+  const canDelete = hasPerm('students', 'delete');
+  $('stBody').innerHTML = list.map(function(s){
+    const rk = s.rank ? '<span class="badge rk-' + s.rank + '">' + s.rank + '</span>' : '—';
+    const total = parseInt(s.soBuoiKhoa || s.soBuoiDeal, 10) || 12;
+    const done = parseInt(s.soBuoiDaHoc, 10) || 0;
+    const left = s.soBuoiConLai != null ? s.soBuoiConLai : Math.max(0, total - done);
+
+    let sessionCell = '<b>' + done + '</b> / ' + total;
+    if (left <= 0) {
+      sessionCell += ' <span class="badge-danger-pulse" style="margin-left:4px">🚨 Hết</span> <button class="btn-renew" style="padding:2px 7px;font-size:11px;margin-left:4px" onclick="event.stopPropagation();openRenewModal(\'' + s.id + '\')">⚡ Gia hạn</button>';
+    } else if (left === 1) {
+      sessionCell += ' <span class="badge-warning-pulse" style="margin-left:4px">⚠️ Còn 1</span> <button class="btn-renew" style="padding:2px 7px;font-size:11px;margin-left:4px" onclick="event.stopPropagation();openRenewModal(\'' + s.id + '\')">⚡ Gia hạn</button>';
+    } else {
+      sessionCell += ' <small style="color:var(--mut)">(còn ' + left + ')</small>';
+    }
+
+    const driveLink = s.linkDrive && s.linkDrive.indexOf('http') === 0
+      ? '<a href="' + esc(s.linkDrive) + '" target="_blank" onclick="event.stopPropagation()" class="pill-note" style="color:var(--teal)">📁 Mở Drive</a>'
+      : '<span style="color:#55695d">—</span>';
+    
+    const actionBtnsHtml = '<div class="row-flex" style="gap:4px;justify-content:flex-end">' +
+      '<button class="btn sm ghost" title="Sửa" onclick="event.stopPropagation();openStudentModalFast(\'' + s.id + '\')">✏ Sửa</button>' +
+      (canDelete ? '<button class="btn sm ghost danger" title="Xoá" onclick="event.stopPropagation();deleteSingleStudent(\'' + s.id + '\',\'' + esc(s.hoTen) + '\')">🗑 Xoá</button>' : '') +
+      '</div>';
+
+    return '<tr onclick="openStudentProfile(\'' + s.id + '\')">' +
+      '<td style="text-align:center"><input type="checkbox" class="st-chk" value="' + s.id + '" onchange="updateSelectedStudentCount()" onclick="event.stopPropagation()"></td>' +
+      '<td>' + getAvatarHtml(s, 'sm-avatar') + '</td>' +
+      '<td><b>' + esc(s.hoTen) + '</b></td>' +
+      '<td>' + esc(s.loaiGiong || '—') + '</td>' +
+      '<td>' + esc(s.lop || '—') + '</td>' +
+      '<td>' + rk + '</td>' +
+      '<td>' + stBadge(s.tinhTrang) + '</td>' +
+      '<td>' + esc(s.giaoVien || '—') + '</td>' +
+      '<td>' + sessionCell + '</td>' +
+      '<td>' + driveLink + '</td>' +
+      '<td style="text-align:right">' + actionBtnsHtml + '</td>' +
+      '</tr>';
+  }).join('');
+}
+
+// ==================== THAO TÁC XOÁ & CHỌN HÀNG LOẠT HỌC VIÊN ====================
+function updateSelectedStudentCount() {
+  const checkedChks = document.querySelectorAll('.st-chk:checked:not(#chkAllStudents):not(#chkAllStudentsTable)');
+  const count = checkedChks.length;
+
+  // Cập nhật giao diện thẻ / lưới / bảng tương ứng với các mục được chọn
+  document.querySelectorAll('.st-card').forEach(function(card){
+    const chk = card.querySelector('.st-chk');
+    card.classList.toggle('selected', !!(chk && chk.checked));
+  });
+  document.querySelectorAll('.st-grid-item').forEach(function(item){
+    const chk = item.querySelector('.st-chk');
+    item.classList.toggle('selected', !!(chk && chk.checked));
+  });
+  document.querySelectorAll('#stBody tr').forEach(function(row){
+    const chk = row.querySelector('.st-chk');
+    row.classList.toggle('st-row-selected', !!(chk && chk.checked));
+  });
+
+  // Hiển thị / ẩn thanh Batch Action Bar
+  const batchBar = $('stBatchBar');
+  const badge = $('stSelectedCountBadge');
+  const btnDeleteBatch = $('btnDeleteSelectedStudents');
+  const canDelete = hasPerm('students', 'delete');
+
+  if (batchBar) {
+    batchBar.style.display = count > 0 ? 'flex' : 'none';
+  }
+  if (badge) {
+    badge.textContent = 'Đã chọn ' + count + ' học viên';
+  }
+  if (btnDeleteBatch) {
+    btnDeleteBatch.style.display = canDelete ? 'inline-flex' : 'none';
+  }
+
+  // Cập nhật trạng thái Checkbox Chọn tất cả (Master Checkboxes)
+  const allVisibleChks = document.querySelectorAll('.st-chk:not(#chkAllStudents):not(#chkAllStudentsTable)');
+  const allChecked = allVisibleChks.length > 0 && (count === allVisibleChks.length);
+  const masterChk1 = $('chkAllStudents');
+  const masterChk2 = $('chkAllStudentsTable');
+  if (masterChk1) masterChk1.checked = allChecked;
+  if (masterChk2) masterChk2.checked = allChecked;
+}
+
+function toggleSelectAllStudents(checked) {
+  const chks = document.querySelectorAll('.st-chk:not(#chkAllStudents):not(#chkAllStudentsTable)');
+  chks.forEach(function(c){ c.checked = checked; });
+  const masterChk1 = $('chkAllStudents');
+  const masterChk2 = $('chkAllStudentsTable');
+  if (masterChk1) masterChk1.checked = checked;
+  if (masterChk2) masterChk2.checked = checked;
+  updateSelectedStudentCount();
+}
+
+function clearSelectedStudents() {
+  toggleSelectAllStudents(false);
+}
+
+function deleteSingleStudent(id, name) {
+  if (!id) { toast('⚠️ Không tìm thấy mã học viên'); return; }
+  if (!hasPerm('students', 'delete')) {
+    toast('⚠️ Bạn không có quyền xoá học viên');
+    return;
+  }
+  const stName = name || 'này';
+  if (!confirm('Bạn có chắc chắn muốn xoá học viên "' + stName + '" không?\n\n⚠️ THAO TÁC KHÔNG THỂ HOÀN TÁC:\n- Toàn bộ hồ sơ học viên sẽ bị xoá.\n- Tất cả lịch sử buổi học, đánh giá giọng và bài hát liên quan sẽ bị xoá vĩnh viễn.')) {
+    return;
+  }
+  executeDeleteStudents([id], false);
+}
+
+function deleteSelectedStudents() {
+  if (!hasPerm('students', 'delete')) {
+    toast('⚠️ Bạn không có quyền xoá học viên');
+    return;
+  }
+  const checkedChks = document.querySelectorAll('.st-chk:checked:not(#chkAllStudents):not(#chkAllStudentsTable)');
+  const ids = Array.from(checkedChks).map(function(c){ return c.value; }).filter(Boolean);
+  if (!ids.length) {
+    toast('⚠️ Chưa chọn học viên nào để xoá');
+    return;
+  }
+  if (!confirm('Bạn có chắc chắn muốn xoá ' + ids.length + ' học viên đã chọn không?\n\n⚠️ THAO TÁC KHÔNG THỂ HOÀN TÁC:\n- Toàn bộ hồ sơ của ' + ids.length + ' học viên sẽ bị xoá.\n- Tất cả lịch sử buổi học, đánh giá giọng và bài hát liên quan sẽ bị xoá vĩnh viễn.')) {
+    return;
+  }
+  executeDeleteStudents(ids, false);
+}
+
+function deleteCurrentStudentFromProfile() {
+  if (!CUR_STUDENT || !CUR_STUDENT.id) {
+    toast('⚠️ Không xác định được học viên hiện tại');
+    return;
+  }
+  if (!hasPerm('students', 'delete')) {
+    toast('⚠️ Bạn không có quyền xoá học viên');
+    return;
+  }
+  if (!confirm('Bạn có chắc chắn muốn xoá học viên "' + (CUR_STUDENT.hoTen || '') + '" không?\n\n⚠️ THAO TÁC KHÔNG THỂ HOÀN TÁC:\n- Hồ sơ và toàn bộ dữ liệu học tập của học viên này sẽ bị xoá vĩnh viễn.')) {
+    return;
+  }
+  executeDeleteStudents([CUR_STUDENT.id], true);
+}
+
+function executeDeleteStudents(studentIds, isFromProfile) {
+  if (!studentIds || !studentIds.length) return;
+
+  const idStrs = studentIds.map(function(id){ return String(id); });
+  
+  // 1. Optimistic UI update: Gỡ ngay học viên khỏi ALL_STUDENTS
+  const backupList = ALL_STUDENTS.slice();
+  ALL_STUDENTS = ALL_STUDENTS.filter(function(s){
+    return idStrs.indexOf(String(s.id)) === -1;
+  });
+
+  // Xoá cache chi tiết
+  idStrs.forEach(function(id){
+    delete CACHE_STUDENTS_DETAIL[id];
+  });
+
+  // Nếu xoá từ Profile -> Quay lại danh sách
+  if (isFromProfile) {
+    goBackToStudentList();
+  } else {
+    renderStudents();
+    renderTrialList();
+  }
+
+  toast('⚡ Đang xoá học viên trên Google Sheets...');
+
+  // Gọi server xoá dữ liệu vĩnh viễn trên Google Sheets
+  google.script.run
+    .withSuccessHandler(function(res){
+      if (res && res.success) {
+        const count = res.count !== undefined ? res.count : studentIds.length;
+        toast('🎉 Đã xoá thành công ' + count + ' học viên và dữ liệu liên quan!');
+        clearSelectedStudents();
+        loadDashboard(); // Cập nhật lại các thẻ thống kê Dashboard
+      } else {
+        // Rollback nếu có lỗi
+        ALL_STUDENTS = backupList;
+        renderStudents();
+        toast('⚠️ Lỗi khi xoá: ' + (res ? res.message : 'Không xác định'));
+      }
+    })
+    .withFailureHandler(function(err){
+      // Rollback nếu lỗi kết nối
+      ALL_STUDENTS = backupList;
+      renderStudents();
+      toast('❌ Lỗi hệ thống: ' + (err ? err.message : 'Không thể kết nối máy chủ'));
+    })
+    .deleteStudents(studentIds);
+}
+
+// ==================== TRANG PROFILE HỌC VIÊN (FULL PAGE) ====================
+function openStudentProfile(id) {
+  // Lấy dữ liệu nhanh
+  const fastData = CACHE_STUDENTS_DETAIL[id] || ALL_STUDENTS.find(function(x){ return String(x.id) === String(id); });
+  if (!fastData) { toast('Không tìm thấy học viên'); return; }
+
+  CUR_STUDENT = fastData;
+  displayStudentProfileView(CUR_STUDENT);
+
+  // Ẩn tất cả view khác, hiện view-student-profile
+  showOnlyView('student-profile');
+  window.scrollTo(0,0);
+
+  // Gọi server nạp chi tiết ngầm
+  google.script.run.withSuccessHandler(function(fullData){
+    if (fullData) {
+      CACHE_STUDENTS_DETAIL[id] = fullData;
+      if (CUR_STUDENT && String(CUR_STUDENT.id) === String(id)) {
+        CUR_STUDENT = fullData;
+        displayStudentProfileView(CUR_STUDENT);
+      }
+    }
+  }).getStudent(id);
+}
+
+function goBackToStudentList() {
+  const backTo = (CUR_STUDENT && isTrialStudent(CUR_STUDENT)) ? 'trial' : 'students';
+  showOnlyView(backTo);
+  $('mainSidebar').style.display          = 'flex';
+  document.body.style.paddingLeft         = '240px';
+  renderStudents();
+  renderTrialList();
+}
+
+function displayStudentProfileView(s) {
+  $('profName').textContent = s.hoTen;
+  $('profSub').textContent  = (s.loaiGiong || 'Chưa chọn loại giọng') + ' · Rank ' + (s.rank || 'A') + ' · GV ' + (s.giaoVien || 'Linh');
+
+  // Avatar lớn
+  if (s.avatar && String(s.avatar).trim().length > 5) {
+    $('profAvatar').style.backgroundImage = "url('" + esc(s.avatar) + "')";
+    $('profAvatar').style.backgroundSize = "cover";
+    $('profAvatar').style.backgroundPosition = "center";
+    $('profAvatar').textContent = '';
+  } else {
+    $('profAvatar').style.backgroundImage = 'none';
+    $('profAvatar').textContent = getInitials(s.hoTen);
+  }
+
+  // 4 box tóm tắt
+  $('pq_lop').textContent        = s.lop || 'Chưa xếp lớp';
+  $('pq_trangthai').textContent  = s.tinhTrang || 'Đang học';
+  const total = parseInt(s.soBuoiKhoa || s.soBuoiDeal, 10) || 12;
+  const done = parseInt(s.soBuoiDaHoc, 10) || 0;
+  const left = s.soBuoiConLai != null ? s.soBuoiConLai : Math.max(0, total - done);
+  $('pq_dienthoai').textContent  = s.dienThoai || s.email || 'Chưa cập nhật';
+
+  // Cảnh báo Banner Profile
+  const alertBox = $('profRenewAlert');
+  if (alertBox) {
+    if (left <= 0) {
+      alertBox.innerHTML = 
+        '<div class="alert-renew-banner danger">' +
+          '<div class="alert-renew-content">' +
+            '<div class="alert-renew-icon">🚨</div>' +
+            '<div>' +
+              '<div class="alert-renew-title">CẢNH BÁO: Học viên ' + esc(s.hoTen) + ' ĐÃ HẾT BUỔI HỌC!</div>' +
+              '<div class="alert-renew-desc">Đã hoàn thành <b>' + done + '/' + total + '</b> buổi. Vui lòng gia hạn thêm để học viên tiếp tục khoá học.</div>' +
+            '</div>' +
+          '</div>' +
+          '<button class="btn-renew" onclick="openRenewModal(\'' + s.id + '\')">⚡ Gia hạn khoá mới ngay</button>' +
+        '</div>';
+    } else if (left === 1) {
+      alertBox.innerHTML = 
+        '<div class="alert-renew-banner">' +
+          '<div class="alert-renew-content">' +
+            '<div class="alert-renew-icon">⚠️</div>' +
+            '<div>' +
+              '<div class="alert-renew-title">CẢNH BÁO: Học viên ' + esc(s.hoTen) + ' CHỈ CÒN 1 BUỔI HỌC CUỐI CÙNG!</div>' +
+              '<div class="alert-renew-desc">Tiến độ: <b>' + done + '/' + total + '</b> buổi (còn đúng 1 buổi). Nhắc học viên gia hạn khoá học kịp thời!</div>' +
+            '</div>' +
+          '</div>' +
+          '<button class="btn-renew" onclick="openRenewModal(\'' + s.id + '\')">⚡ Gia hạn thêm ngay</button>' +
+        '</div>';
+    } else {
+      alertBox.innerHTML = '';
+    }
+  }
+
+  // Cập nhật số buổi & Thống kê
+  if (left <= 0) {
+    $('pq_conlai').innerHTML = '<span class="badge-danger-pulse">🚨 Hết buổi (0)</span>';
+    $('p_conlai_num').innerHTML = '<span style="color:var(--danger)">0 buổi</span> <button class="btn-renew" style="padding:2px 8px;font-size:11px;margin-left:6px" onclick="openRenewModal(\'' + s.id + '\')">⚡ Gia hạn</button>';
+  } else if (left === 1) {
+    $('pq_conlai').innerHTML = '<span class="badge-warning-pulse">⚠️ Còn 1 buổi</span>';
+    $('p_conlai_num').innerHTML = '<span style="color:var(--warn)">1 buổi</span> <button class="btn-renew" style="padding:2px 8px;font-size:11px;margin-left:6px" onclick="openRenewModal(\'' + s.id + '\')">⚡ Gia hạn</button>';
+  } else {
+    $('pq_conlai').textContent = left + ' buổi';
+    $('p_conlai_num').textContent = left + ' buổi';
+  }
+
+  // Tổng quan buổi học
+  $('p_dahoc').textContent = done + ' buổi';
+  
+  const bhList = s.buoiHoc || [];
+  if (bhList.length > 0) {
+    const lastBh = bhList[bhList.length - 1];
+    $('p_gannhat').textContent = 'Buổi ' + (lastBh.buoiSo || '') + ' (' + fmtDate(lastBh.ngayHoc) + ')';
+  } else {
+    $('p_gannhat').textContent = 'Chưa có buổi học';
+  }
+
+  // Thông tin cá nhân & thanh nhạc
+  $('p_namsinh').textContent   = s.namSinh || '—';
+  $('p_gv').textContent        = s.giaoVien || 'Linh';
+  $('p_quang').textContent     = s.quangGiong || (s.noteThap && s.noteCao ? s.noteThap + '–' + s.noteCao : '—');
+  $('p_chuyen').textContent    = s.noteChuyenGiong || '—';
+
+  // 5 phân vùng quãng giọng
+  if ($('p_reg_chest'))    $('p_reg_chest').textContent    = s.chestVoice || '—';
+  if ($('p_reg_mix'))      $('p_reg_mix').textContent      = s.mixVoice || '—';
+  if ($('p_reg_falsetto')) $('p_reg_falsetto').textContent = s.falsetto || '—';
+  if ($('p_reg_head'))     $('p_reg_head').textContent     = s.headVoice || '—';
+  if ($('p_reg_whistle'))  $('p_reg_whistle').textContent  = s.whistleVoice || '—';
+
+  $('p_diemmanh').textContent  = s.diemManh || 'Chưa có thông tin điểm mạnh.';
+  $('p_diemyeu').textContent   = s.diemYeu || 'Chưa có thông tin điểm yếu.';
+  $('p_khuyennghi').innerHTML  = s.khuyenNghi ? mdBold(s.khuyenNghi) : 'Chưa có lộ trình. Hãy thực hiện Test Rank để AI đề xuất.';
+
+  if (s.linkDrive && s.linkDrive.indexOf('http') === 0) {
+    $('p_driveLink').style.display = 'inline-flex';
+    $('p_driveLink').href = s.linkDrive;
+  } else {
+    $('p_driveLink').style.display = 'none';
+  }
+
+  // Render các tab con
+  renderProfileSessions(bhList);
+  renderProfileExercises(bhList);
+  renderProfileVoices(s.danhGiaGiong || []);
+  renderProfileSongs(s.phanTichBai || []);
+  if ($('ptab-pprog') && $('ptab-pprog').style.display === 'block') renderProgressCharts(bhList);
+}
+
+let EDITING_SESSION_ID = null;
+
+function renderProfileSessions(list) {
+  const container = $('profSessionList');
+  const chkAll = $('chkSelectAllSessions');
+  if (chkAll) { chkAll.checked = false; }
+  updateSelectedSessionCount();
+
+  if (!list || !list.length) { 
+    container.innerHTML = '<div class="empty">Chưa có buổi học nào được ghi nhận.</div>'; 
+    if ($('lblSelectAllSessions')) $('lblSelectAllSessions').style.display = 'none';
+    return; 
+  }
+  if ($('lblSelectAllSessions')) $('lblSelectAllSessions').style.display = 'inline-flex';
+
+  const driveLink = (CUR_STUDENT && CUR_STUDENT.linkDrive && CUR_STUDENT.linkDrive.indexOf('http') === 0) ? CUR_STUDENT.linkDrive : '';
+
+  container.innerHTML = list.slice().reverse().map(function(b){
+    // Xử lý danh sách bài hát
+    let songsList = [];
+    if (b.songsJson) {
+      try {
+        const parsed = typeof b.songsJson === 'string' ? JSON.parse(b.songsJson) : b.songsJson;
+        if (Array.isArray(parsed) && parsed.length > 0) songsList = parsed;
+      } catch(e) {}
+    }
+    if (!songsList.length && b.baiHat) {
+      songsList = [{
+        title: b.baiHat,
+        ytLink: b.linkYoutube || ((b.baiHat.indexOf('http') === 0) ? b.baiHat : ''),
+        noteCao: b.noteCao || '',
+        noteThap: b.noteThap || '',
+        details: b.noiDung || ''
+      }];
+    }
+
+    let songsHtml = '';
+    if (songsList.length > 0) {
+      songsHtml = songsList.filter(function(s){ return s.title || s.ytLink; }).map(function(s, idx){
+        let sYtBtn = '';
+        if (s.ytLink && s.ytLink.indexOf('http') === 0) {
+          sYtBtn = '<a href="' + esc(s.ytLink) + '" target="_blank" onclick="event.stopPropagation()" class="yt-pill-btn sm">▶ Xem YouTube</a>';
+        }
+        return '<div style="font-size:13.5px;font-weight:600;margin:4px 0;display:flex;align-items:center;gap:8px;flex-wrap:wrap">' +
+          '<span>🎵 ' + esc(s.title || 'Bài hát ' + (idx+1)) + (s.noteCao ? ' <small style="color:var(--mut)">(Cao: ' + esc(s.noteCao) + ', Thấp: ' + esc(s.noteThap) + ')</small>' : '') + '</span>' +
+          sYtBtn +
+          (s.details ? '<span style="color:var(--mut);font-weight:400;font-size:12px">(' + esc(s.details) + ')</span>' : '') +
+        '</div>';
+      }).join('');
+    }
+
+    // Xử lý danh sách kỹ thuật
+    let techsList = [];
+    if (b.techsJson) {
+      try {
+        const parsed = typeof b.techsJson === 'string' ? JSON.parse(b.techsJson) : b.techsJson;
+        if (Array.isArray(parsed) && parsed.length > 0) techsList = parsed;
+      } catch(e) {}
+    }
+    if (!techsList.length && (b.kyThuat || b.linkYoutubeKyThuat)) {
+      techsList = [{
+        name: b.kyThuat || 'Luyện thanh',
+        ytLink: b.linkYoutubeKyThuat || '',
+        notes: ''
+      }];
+    }
+
+    let techsHtml = '';
+    if (techsList.length > 0) {
+      techsHtml = techsList.filter(function(t){ return t.name || t.ytLink; }).map(function(t){
+        let tYtBtn = '';
+        if (t.ytLink && t.ytLink.indexOf('http') === 0) {
+          tYtBtn = '<a href="' + esc(t.ytLink) + '" target="_blank" onclick="event.stopPropagation()" class="yt-pill-btn sm">🎬 Video bài tập</a>';
+        }
+        return '<div style="margin-top:4px;display:flex;align-items:center;gap:8px;flex-wrap:wrap">' +
+          '<span><b>🎼 Kỹ thuật:</b> ' + esc(t.name) + (t.notes ? ' <small style="color:var(--mut)">(' + esc(t.notes) + ')</small>' : '') + '</span>' +
+          tYtBtn +
+        '</div>';
+      }).join('');
+    }
+
+    // Xử lý hiển thị cấu trúc hướng dẫn từng đoạn hát
+    let guideSectionsHtml = '';
+    if (b.huongDanHatJson) {
+      try {
+        const secs = typeof b.huongDanHatJson === 'string' ? JSON.parse(b.huongDanHatJson) : b.huongDanHatJson;
+        if (Array.isArray(secs) && secs.length > 0) {
+          const filled = secs.filter(function(s){ return s && s.text && s.text.trim(); });
+          if (filled.length > 0) {
+            guideSectionsHtml = '<div style="margin-top:8px;background:#090f0c;border:1px solid var(--line);border-radius:8px;padding:8px 10px">' +
+              '<div style="font-size:11.5px;font-weight:700;color:var(--gold);margin-bottom:6px">✨ Hướng dẫn chi tiết từng đoạn:</div>' +
+              filled.map(function(s){
+                return '<div style="margin-bottom:5px;font-size:12.5px">' +
+                  '<span class="guide-badge ' + (s.badge || 'badge-custom') + '" style="font-size:10px;padding:1px 6px;margin-right:6px">' + esc(s.title) + '</span>' +
+                  '<span style="color:#d5e5db">' + esc(s.text) + '</span>' +
+                '</div>';
+              }).join('') +
+            '</div>';
+          }
+        }
+      } catch(e) {}
+    }
+
+    const driveBtn = driveLink ? '<a href="' + esc(driveLink) + '" target="_blank" onclick="event.stopPropagation()" class="btn sm ghost" style="padding:2px 7px;font-size:11px">📁 Drive</a>' : '';
+
+    return '<div class="hist-item" style="cursor:pointer;transition:.18s;border-left:3px solid var(--gold);position:relative" onclick="openPastSessionInStudio(\'' + (b.id||'') + '\')">' +
+      '<div class="h" style="display:flex;align-items:center;justify-content:space-between;gap:8px">' +
+        '<div style="display:flex;align-items:center;gap:10px">' +
+          '<input type="checkbox" class="sess-chk" value="' + (b.id||'') + '" onclick="event.stopPropagation()" onchange="updateSelectedSessionCount()" style="width:16px;height:16px;cursor:pointer">' +
+          '<span><b style="color:var(--gold)">Buổi ' + (b.buoiSo || '') + '</b> · ' + fmtDate(b.ngayHoc) + '</span>' +
+        '</div>' +
+        '<div style="display:flex;align-items:center;gap:6px">' +
+          driveBtn +
+          '<span class="badge" style="background:#2b543b;color:#fff">▶ Mở lại trong Studio</span>' +
+          (String(b.isGroupSession).toUpperCase() === 'TRUE' ? '<span class="badge" style="background:#1a2a3a;color:#6bb0e0">👥 Nhóm</span>' : '') +
+          (b.totalScore
+            ? '<span class="grade-badge grade-' + (b.sessionGrade || 'none') + '">' + b.totalScore + '/24' + (b.sessionGrade ? ' · ' + b.sessionGrade : '') + '</span>'
+            : (b.diemSo ? '<span class="badge" style="background:#3a2f1a;color:var(--gold)">Điểm: ' + b.diemSo + '/10</span>' : '')) +
+          '<button class="btn sm danger" style="padding:2px 8px;font-size:12px" title="Xoá buổi học này" onclick="event.stopPropagation();deleteSingleSession(\'' + (b.id||'') + '\', \'' + (b.buoiSo||'') + '\')">🗑 Xoá</button>' +
+        '</div>' +
+      '</div>' +
+      songsHtml +
+      techsHtml +
+      (b.noiDung && !songsHtml ? '<div style="margin-top:4px;color:#cfe5d6"><b>Lưu ý:</b> ' + esc(b.noiDung) + '</div>' : '') +
+      guideSectionsHtml +
+      (b.nhanXet ? '<div style="margin-top:5px;color:var(--teal)"><b>GV nhận xét:</b> ' + esc(b.nhanXet) + '</div>' : '') +
+      (b.baiTapVeNha ? '<div style="margin-top:4px;color:var(--gold)"><b>BTVN:</b> ' + esc(b.baiTapVeNha) + '</div>' : '') +
+      '</div>';
+  }).join('');
+}
+
+function toggleSelectAllSessions(checked) {
+  const chks = document.querySelectorAll('.sess-chk');
+  chks.forEach(function(c){ c.checked = checked; });
+  updateSelectedSessionCount();
+}
+
+function updateSelectedSessionCount() {
+  const checked = document.querySelectorAll('.sess-chk:checked');
+  const count = checked.length;
+  const btnBulk = $('btnBulkDeleteSessions');
+  const selCount = $('selSessCount');
+  if (selCount) selCount.innerText = count;
+  if (btnBulk) {
+    btnBulk.style.display = count > 0 ? 'inline-block' : 'none';
+  }
+}
+
+function deleteSingleSession(sessionId, buoiSo) {
+  if (!sessionId) {
+    toast('⚠️ Không tìm thấy mã buổi học để xoá');
+    return;
+  }
+  const label = buoiSo ? ('Buổi ' + buoiSo) : sessionId;
+  if (!confirm('Bạn có chắc chắn muốn xoá lịch sử ' + label + ' không?\n(Dữ liệu buổi học và số buổi đã học sẽ được cập nhật lại)')) {
+    return;
+  }
+  executeDeleteSessions([sessionId]);
+}
+
+function deleteSelectedSessions() {
+  const checked = document.querySelectorAll('.sess-chk:checked');
+  const ids = Array.from(checked).map(function(c){ return c.value; }).filter(Boolean);
+  if (!ids.length) {
+    toast('⚠️ Chưa chọn buổi học nào để xoá');
+    return;
+  }
+  if (!confirm('Bạn có chắc chắn muốn xoá ' + ids.length + ' buổi học đã chọn không?')) {
+    return;
+  }
+  executeDeleteSessions(ids);
+}
+
+function executeDeleteSessions(sessionIds) {
+  if (!CUR_STUDENT || !CUR_STUDENT.id) {
+    toast('⚠️ Không xác định được học viên');
+    return;
+  }
+
+  // 1. Optimistic UI update: Gỡ ngay lập tức các buổi học trên giao diện (Tốc độ tức thì)
+  const idStrs = sessionIds.map(function(id){ return String(id); });
+  const backupSessions = CUR_STUDENT.buoiHoc ? CUR_STUDENT.buoiHoc.slice() : [];
+  CUR_STUDENT.buoiHoc = backupSessions.filter(function(b){
+    return idStrs.indexOf(String(b.id)) === -1;
+  });
+  
+  // Render lại ngay các tab
+  renderProfileSessions(CUR_STUDENT.buoiHoc);
+  renderProfileExercises(CUR_STUDENT.buoiHoc);
+  renderProfileSongs(CUR_STUDENT.phanTichBai || []);
+  
+  // Cập nhật ngay các thẻ số buổi
+  const total = parseInt(CUR_STUDENT.soBuoiKhoa || CUR_STUDENT.soBuoiDeal, 10) || 0;
+  const done = CUR_STUDENT.buoiHoc.length;
+  const left = Math.max(0, total - done);
+  if ($('p_dahoc')) $('p_dahoc').textContent = done + ' buổi';
+  if ($('p_conlai_num')) $('p_conlai_num').textContent = left + ' buổi';
+  if ($('pq_conlai')) $('pq_conlai').textContent = left + ' buổi';
+
+  toast('⚡ Đang tự động xoá trên Google Sheets...');
+
+  google.script.run
+    .withSuccessHandler(function(res){
+      if (res && res.success) {
+        toast('🎉 Đã xoá sạch hàng trên Google Sheets (' + (res.count !== undefined ? res.count : sessionIds.length) + ' buổi)!');
+        delete CACHE_STUDENTS_DETAIL[CUR_STUDENT.id];
+        loadStudents();
+      } else {
+        // Rollback nếu thất bại
+        CUR_STUDENT.buoiHoc = backupSessions;
+        renderProfileSessions(CUR_STUDENT.buoiHoc);
+        renderProfileExercises(CUR_STUDENT.buoiHoc);
+        toast('⚠️ Lỗi khi xoá: ' + (res ? res.message : 'Không xác định'));
+      }
+    })
+    .withFailureHandler(function(err){
+      CUR_STUDENT.buoiHoc = backupSessions;
+      renderProfileSessions(CUR_STUDENT.buoiHoc);
+      renderProfileExercises(CUR_STUDENT.buoiHoc);
+      toast('❌ Lỗi hệ thống: ' + (err ? err.message : 'Không thể kết nối máy chủ'));
+    })
+    .deleteSessions(sessionIds, CUR_STUDENT.id);
+}
+
+function renderProfileExercises(list) {
+  const container = $('profExerciseList');
+  const allTechItems = [];
+  const driveLink = (CUR_STUDENT && CUR_STUDENT.linkDrive && CUR_STUDENT.linkDrive.indexOf('http') === 0) ? CUR_STUDENT.linkDrive : '';
+
+  (list || []).forEach(function(b){
+    // 1. Trích xuất từ techsJson nếu có
+    let hasTechs = false;
+    if (b.techsJson) {
+      try {
+        const parsed = typeof b.techsJson === 'string' ? JSON.parse(b.techsJson) : b.techsJson;
+        if (Array.isArray(parsed) && parsed.length > 0) {
+          parsed.forEach(function(t){
+            if (t.name || t.ytLink || t.notes) {
+              hasTechs = true;
+              allTechItems.push({
+                sessionId: b.id,
+                buoiSo: b.buoiSo,
+                date: b.ngayHoc,
+                name: t.name || 'Bài tập kỹ thuật',
+                ytLink: t.ytLink || '',
+                notes: t.notes || '',
+                btvn: b.baiTapVeNha || ''
+              });
+            }
+          });
+        }
+      } catch(e) {}
+    }
+    // 2. Fallback từ kyThuat & linkYoutubeKyThuat
+    if (!hasTechs && (b.kyThuat || b.linkYoutubeKyThuat || b.baiTapVeNha)) {
+      allTechItems.push({
+        sessionId: b.id,
+        buoiSo: b.buoiSo,
+        date: b.ngayHoc,
+        name: b.kyThuat || 'Luyện thanh & Khởi động',
+        ytLink: b.linkYoutubeKyThuat || '',
+        notes: '',
+        btvn: b.baiTapVeNha || ''
+      });
+    }
+  });
+
+  if (!allTechItems.length) { 
+    container.innerHTML = '<div class="empty">Chưa có bài tập hoặc kỹ thuật nào. Bấm "+ Thêm kỹ thuật mới" để thêm.</div>'; 
+    return; 
+  }
+  
+  container.innerHTML = allTechItems.slice().reverse().map(function(item){
+    let ytBtn = '';
+    if (item.ytLink && item.ytLink.indexOf('http') === 0) {
+      ytBtn = '<a href="' + esc(item.ytLink) + '" target="_blank" onclick="event.stopPropagation()" class="yt-pill-btn sm">🎬 Video bài tập (YouTube)</a>';
+    }
+
+    const driveBtn = driveLink ? '<a href="' + esc(driveLink) + '" target="_blank" onclick="event.stopPropagation()" class="btn sm ghost" style="padding:2px 8px;font-size:11px">📁 Mở Folder Drive</a>' : '';
+
+    return '<div class="hist-item" style="cursor:pointer;transition:.18s" onclick="openPastSessionInStudio(\'' + (item.sessionId||'') + '\')">' +
+      '<div class="h" style="display:flex;align-items:center;justify-content:space-between;gap:8px">' +
+        '<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">' +
+          '<span class="badge" style="background:#13281d;color:var(--teal)">Buổi ' + (item.buoiSo || '') + '</span>' +
+          '<span style="color:var(--mut);font-size:12px">📅 ' + fmtDate(item.date) + '</span>' +
+          '<b style="color:#fff;font-size:14px">🎼 ' + esc(item.name) + '</b>' +
+          ytBtn +
+        '</div>' +
+        '<div style="display:flex;align-items:center;gap:6px">' +
+          driveBtn +
+          '<span class="badge" style="background:#16352c;color:var(--teal)">▶ Mở giáo án</span>' +
+        '</div>' +
+      '</div>' +
+      (item.notes ? '<div style="margin-top:6px;color:#cfe5d6"><b>Hướng dẫn:</b> ' + esc(item.notes) + '</div>' : '') +
+      (item.btvn ? '<div style="margin-top:4px;color:var(--gold)"><b>BTVN:</b> ' + esc(item.btvn) + '</div>' : '') +
+      '</div>';
+  }).join('');
+}
+
+function renderProfileVoices(list) {
+  const container = $('profVoiceList');
+  if (!list.length) { container.innerHTML = '<div class="empty">Chưa có kết quả đánh giá giọng nào.</div>'; return; }
+  container.innerHTML = list.slice().reverse().map(function(v){
+    return '<div class="hist-item">' +
+      '<div class="h"><span>' + fmtDate(v.ngayDanhGia) + ' · ' + esc(v.loaiPhieu || 'Đánh giá') + '</span>' +
+      '<span>' + (v.tongDiem || 0) + '/18 · <b>Rank ' + (v.rankGoiY || '') + '</b></span></div>' +
+      '<div class="ai-box" style="border:none;padding:0;background:none">' + mdBold(v.ketQuaAI || '') + '</div>' +
+      '</div>';
+  }).join('');
+}
+
+function renderProfileSongs(list) {
+  const container = $('profSongList');
+  const allSongItems = [];
+  const driveLink = (CUR_STUDENT && CUR_STUDENT.linkDrive && CUR_STUDENT.linkDrive.indexOf('http') === 0) ? CUR_STUDENT.linkDrive : '';
+
+  // 1. Lấy tất cả bài hát từ các buổi học (cả songsJson và bài hát đơn)
+  const bhList = (CUR_STUDENT && CUR_STUDENT.buoiHoc) ? CUR_STUDENT.buoiHoc : [];
+  bhList.forEach(function(b){
+    let hasSongsJson = false;
+    if (b.songsJson) {
+      try {
+        const parsed = typeof b.songsJson === 'string' ? JSON.parse(b.songsJson) : b.songsJson;
+        if (Array.isArray(parsed) && parsed.length > 0) {
+          parsed.forEach(function(s){
+            if (s.title || s.ytLink) {
+              hasSongsJson = true;
+              allSongItems.push({
+                type: 'session',
+                sessionId: b.id,
+                buoiSo: b.buoiSo,
+                date: b.ngayHoc,
+                title: s.title || 'Bài hát thực hành',
+                ytLink: s.ytLink || '',
+                noteCao: s.noteCao || '',
+                noteThap: s.noteThap || '',
+                tone: s.tone || '0',
+                details: s.details || b.noiDung || ''
+              });
+            }
+          });
+        }
+      } catch(e) {}
+    }
+
+    if (!hasSongsJson && b.baiHat && b.baiHat.trim() && b.baiHat !== 'Thực hành bài hát') {
+      let ytLink = b.linkYoutube || '';
+      let title = b.baiHat;
+      if (title.indexOf('http') === 0 && !ytLink) {
+        ytLink = title;
+        title = 'Bài hát thực hành';
+      }
+      allSongItems.push({
+        type: 'session',
+        sessionId: b.id,
+        buoiSo: b.buoiSo,
+        date: b.ngayHoc,
+        title: title,
+        ytLink: ytLink,
+        noteCao: b.noteCao,
+        noteThap: b.noteThap,
+        tone: '0',
+        details: b.noiDung || ''
+      });
+    }
+  });
+
+  // 2. Lấy tất cả bài hát từ phân tích AI
+  (list || []).forEach(function(p){
+    allSongItems.push({
+      type: 'ai',
+      songId: p.id,
+      date: p.createdAt,
+      title: (p.tenBai || 'Bài hát') + (p.ca ? ' — ' + p.ca : ''),
+      ytLink: p.linkYoutube || '',
+      noteCao: '',
+      noteThap: '',
+      tone: '0',
+      details: p.ketQuaAI || ''
+    });
+  });
+
+  if (!allSongItems.length) {
+    container.innerHTML = '<div class="empty">Chưa có bài hát nào được ghi nhận. Bấm "+ Thêm bài hát mới" để bắt đầu buổi học.</div>';
+    return;
+  }
+
+  const stRange = getStudentRangeInfo();
+
+  container.innerHTML = allSongItems.map(function(item){
+    let ytBtn = '';
+    if (item.ytLink && item.ytLink.indexOf('http') === 0) {
+      ytBtn = '<a href="' + esc(item.ytLink) + '" target="_blank" onclick="event.stopPropagation()" class="yt-pill-btn sm">▶ Xem YouTube</a>';
+    }
+
+    const driveBtn = driveLink ? '<a href="' + esc(driveLink) + '" target="_blank" onclick="event.stopPropagation()" class="btn sm ghost" style="padding:2px 8px;font-size:11px">📁 Mở Folder Drive</a>' : '';
+
+    const clickAction = item.type === 'session'
+      ? 'openPastSessionInStudio(\'' + (item.sessionId||'') + '\')'
+      : 'openPastSongInStudio(\'' + (item.songId||'') + '\')';
+
+    const tag = item.type === 'session'
+      ? '<span class="badge" style="background:#13281d;color:var(--teal)">Buổi ' + (item.buoiSo || '') + '</span>'
+      : '<span class="badge" style="background:#3a2f1a;color:var(--gold)">AI Phân tích</span>';
+
+    const toneBadge = (item.tone && item.tone !== '0')
+      ? '<span class="badge" style="background:#2b220b;color:var(--gold);border:1px solid #784918">Tone: ' + esc(item.tone) + '</span>'
+      : '<span class="badge" style="background:#141d17;color:var(--mut)">Tone: Gốc</span>';
+
+    const stRangeBadge = (stRange.low !== '—' || stRange.high !== '—')
+      ? '<span class="badge" style="background:#091910;color:var(--teal);border:1px solid #1c3523" title="Quãng giọng học viên">🎙 HV: ' + esc(stRange.low) + '–' + esc(stRange.high) + '</span>'
+      : '';
+
+    return '<div class="hist-item" style="cursor:pointer;transition:.18s" onclick="' + clickAction + '">' +
+      '<div class="h" style="display:flex;align-items:center;justify-content:space-between;gap:8px">' +
+        '<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">' +
+          tag +
+          '<span style="color:var(--mut);font-size:12px">📅 ' + fmtDate(item.date) + '</span>' +
+          '<b style="font-size:14.5px;color:#fff">🎵 ' + esc(item.title) + '</b>' +
+          (item.noteCao ? '<small style="color:var(--mut)">(Cao: ' + esc(item.noteCao) + ', Thấp: ' + esc(item.noteThap) + ')</small>' : '') +
+          toneBadge +
+          stRangeBadge +
+          ytBtn +
+        '</div>' +
+        '<div style="display:flex;align-items:center;gap:6px">' +
+          driveBtn +
+          '<span class="badge" style="background:#2b543b;color:#fff">▶ Mở vào Studio</span>' +
+        '</div>' +
+      '</div>' +
+      (item.details ? '<div class="ai-box" style="border:none;padding:0;background:none;margin-top:6px;font-size:12px">' + mdBold(item.details.slice(0, 300) + (item.details.length > 300 ? '...' : '')) + '</div>' : '') +
+      '</div>';
+  }).join('');
+}
+
+// ==================== DYNAMIC MULTI-SONG MANAGEMENT & PER-SONG GUIDES ====================
+let STUDIO_SONGS = [];
+let ACTIVE_SONG_GUIDE_INDEX = 0;
+let CURRENT_SONG_SECTIONS = [];
+
+function getDefaultSongStructure() {
+  return [
+    { id: 'sec_1', title: 'Ver 1', badge: 'badge-ver', text: '' },
+    { id: 'sec_2', title: 'Ver 2', badge: 'badge-ver', text: '' },
+    { id: 'sec_3', title: 'Chorus', badge: 'badge-chorus', text: '' },
+    { id: 'sec_4', title: 'Giang tấu', badge: 'badge-interlude', text: '' },
+    { id: 'sec_5', title: 'Ver 2', badge: 'badge-ver', text: '' },
+    { id: 'sec_6', title: 'Chorus', badge: 'badge-chorus', text: '' },
+    { id: 'sec_7', title: 'Chorus', badge: 'badge-chorus-climax', text: '' },
+    { id: 'sec_8', title: '2 câu cuối Chorus', badge: 'badge-ending', text: '' }
+  ];
+}
+
+function getStudentRangeInfo() {
+  if (!CUR_STUDENT) return { low: '—', high: '—', text: 'Chưa có thông tin' };
+  let low = CUR_STUDENT.noteThap || '';
+  let high = CUR_STUDENT.noteCao || '';
+  if (!low && CUR_STUDENT.chestVoice) {
+    const parts = String(CUR_STUDENT.chestVoice).split(/[-–—]/);
+    if (parts[0]) low = parts[0].trim();
+  }
+  if (!high && (CUR_STUDENT.whistleVoice || CUR_STUDENT.headVoice || CUR_STUDENT.mixVoice)) {
+    const src = (CUR_STUDENT.whistleVoice && CUR_STUDENT.whistleVoice !== '—') ? CUR_STUDENT.whistleVoice
+      : ((CUR_STUDENT.headVoice && CUR_STUDENT.headVoice !== '—') ? CUR_STUDENT.headVoice : CUR_STUDENT.mixVoice);
+    const parts = String(src).split(/[-–—]/);
+    if (parts.length > 1) high = parts[parts.length - 1].trim();
+  }
+  if (!low && CUR_STUDENT.quangGiong) {
+    const parts = String(CUR_STUDENT.quangGiong).split(/[-–—]/);
+    if (parts[0]) low = parts[0].trim();
+    if (parts.length > 1) high = parts[parts.length - 1].trim();
+  }
+  low = low || '—';
+  high = high || '—';
+  const text = (low !== '—' && high !== '—') ? (low + ' – ' + high) : (CUR_STUDENT.quangGiong || '—');
+  return { low: low, high: high, text: text };
+}
+
+function syncActiveSongGuideFromDom() {
+  const guideItems = document.querySelectorAll('#cf_songGuideBuilder .guide-sec-item');
+  guideItems.forEach(function(item, idx){
+    if (CURRENT_SONG_SECTIONS[idx]) {
+      const ta = item.querySelector('textarea');
+      if (ta) CURRENT_SONG_SECTIONS[idx].text = ta.value;
+    }
+  });
+  if (STUDIO_SONGS[ACTIVE_SONG_GUIDE_INDEX]) {
+    STUDIO_SONGS[ACTIVE_SONG_GUIDE_INDEX].guideSections = JSON.parse(JSON.stringify(CURRENT_SONG_SECTIONS));
+  }
+}
+
+function switchActiveSongGuide(targetIdx) {
+  if (targetIdx < 0 || targetIdx >= STUDIO_SONGS.length) return;
+  syncActiveSongGuideFromDom();
+  ACTIVE_SONG_GUIDE_INDEX = targetIdx;
+  if (!STUDIO_SONGS[targetIdx].guideSections || !Array.isArray(STUDIO_SONGS[targetIdx].guideSections) || !STUDIO_SONGS[targetIdx].guideSections.length) {
+    STUDIO_SONGS[targetIdx].guideSections = getDefaultSongStructure();
+  }
+  CURRENT_SONG_SECTIONS = STUDIO_SONGS[targetIdx].guideSections;
+  renderSongGuideTabs();
+  renderSongGuideBuilder();
+  renderStudioSongsList();
+}
+
+function renderSongGuideTabs() {
+  const container = $('cf_songGuideTabsContainer');
+  if (!container) return;
+  if (!STUDIO_SONGS.length) {
+    container.innerHTML = '';
+    return;
+  }
+  container.innerHTML = STUDIO_SONGS.map(function(s, idx){
+    const isActive = (idx === ACTIVE_SONG_GUIDE_INDEX);
+    const title = s.title && s.title.trim() ? s.title.trim() : ('Bài ' + (idx + 1));
+    return '<button type="button" class="btn-song-tab ' + (isActive ? 'active' : '') + '" onclick="switchActiveSongGuide(' + idx + ')">' +
+      '<span>🎵 ' + esc(title) + '</span>' +
+      (isActive ? '<span class="tab-badge">Đang soạn</span>' : '') +
+    '</button>';
+  }).join('');
+}
+
+function addStudioSongItem(data) {
+  syncActiveSongGuideFromDom();
+
+  const s = data || {
+    id: 'song_' + Date.now() + '_' + Math.floor(Math.random()*1000),
+    title: '',
+    ytLink: '',
+    noteCao: '',
+    noteThap: '',
+    tone: '0',
+    details: '',
+    guideSections: getDefaultSongStructure()
+  };
+  if (!s.guideSections || !Array.isArray(s.guideSections) || !s.guideSections.length) {
+    s.guideSections = getDefaultSongStructure();
+  }
+  if (s.tone === undefined) s.tone = '0';
+
+  STUDIO_SONGS.push(s);
+  ACTIVE_SONG_GUIDE_INDEX = STUDIO_SONGS.length - 1;
+  CURRENT_SONG_SECTIONS = s.guideSections;
+
+  renderStudioSongsList();
+  renderSongGuideTabs();
+  renderSongGuideBuilder();
+}
+
+function removeStudioSongItem(idx) {
+  if (STUDIO_SONGS.length <= 1) {
+    STUDIO_SONGS[0] = {
+      id: 'song_' + Date.now(),
+      title: '',
+      ytLink: '',
+      noteCao: '',
+      noteThap: '',
+      tone: '0',
+      details: '',
+      guideSections: getDefaultSongStructure()
+    };
+    ACTIVE_SONG_GUIDE_INDEX = 0;
+    CURRENT_SONG_SECTIONS = STUDIO_SONGS[0].guideSections;
+    renderStudioSongsList();
+    renderSongGuideTabs();
+    renderSongGuideBuilder();
+    return;
+  }
+  STUDIO_SONGS.splice(idx, 1);
+  if (ACTIVE_SONG_GUIDE_INDEX >= STUDIO_SONGS.length) {
+    ACTIVE_SONG_GUIDE_INDEX = STUDIO_SONGS.length - 1;
+  }
+  CURRENT_SONG_SECTIONS = STUDIO_SONGS[ACTIVE_SONG_GUIDE_INDEX].guideSections || getDefaultSongStructure();
+  renderStudioSongsList();
+  renderSongGuideTabs();
+  renderSongGuideBuilder();
+}
+
+function updateStudioSongField(idx, field, val) {
+  if (STUDIO_SONGS[idx]) {
+    STUDIO_SONGS[idx][field] = val;
+    if (field === 'title') {
+      renderSongGuideTabs();
+      const titleEl = $('cf_song_card_title_' + idx);
+      if (titleEl) titleEl.textContent = val ? (': ' + val) : '';
+    }
+    if (field === 'ytLink') {
+      const btn = $('cf_song_play_' + idx);
+      if (btn) {
+        if (val && val.trim().indexOf('http') === 0) {
+          btn.style.display = 'inline-flex';
+          btn.href = val.trim();
+        } else {
+          btn.style.display = 'none';
+        }
+      }
+    }
+  }
+}
+
+function quickShiftTone(idx, delta) {
+  if (!STUDIO_SONGS[idx]) return;
+  let cur = parseFloat(STUDIO_SONGS[idx].tone) || 0;
+  if (delta === 0) cur = 0;
+  else cur += delta;
+  let valStr = cur === 0 ? '0' : (cur > 0 ? ('+' + cur) : String(cur));
+  STUDIO_SONGS[idx].tone = valStr;
+  renderStudioSongsList();
+}
+
+function renderStudioSongsList() {
+  const container = $('cf_songsListContainer');
+  if (!container) return;
+  if (!STUDIO_SONGS.length) {
+    STUDIO_SONGS = [{
+      id: 'song_1',
+      title: '',
+      ytLink: '',
+      noteCao: '',
+      noteThap: '',
+      tone: '0',
+      details: '',
+      guideSections: getDefaultSongStructure()
+    }];
+    ACTIVE_SONG_GUIDE_INDEX = 0;
+    CURRENT_SONG_SECTIONS = STUDIO_SONGS[0].guideSections;
+  }
+
+  const stRange = getStudentRangeInfo();
+
+  container.innerHTML = STUDIO_SONGS.map(function(s, idx){
+    const ytVisible = (s.ytLink && s.ytLink.trim().indexOf('http') === 0);
+    const isGuideActive = (idx === ACTIVE_SONG_GUIDE_INDEX);
+    const toneVal = (s.tone != null && s.tone !== '') ? String(s.tone) : '0';
+
+    return '<div class="studio-sub-card" style="' + (isGuideActive ? 'border-color:var(--teal);background:#0d1a13' : '') + '">' +
+      '<div class="studio-sub-card-head">' +
+        '<div class="studio-sub-card-title">' +
+          '<span>🎵 Bài hát ' + (idx + 1) + '</span>' +
+          '<span id="cf_song_card_title_' + idx + '" style="color:#fff;font-weight:600">' + (s.title ? (': ' + esc(s.title)) : '') + '</span>' +
+        '</div>' +
+        '<div style="display:flex;gap:6px;align-items:center">' +
+          '<button type="button" class="btn sm ' + (isGuideActive ? 'gold' : 'ghost') + '" style="padding:2px 8px;font-size:11px" onclick="switchActiveSongGuide(' + idx + ')" title="Chuyển sang soạn hướng dẫn cho bài hát này">' +
+            (isGuideActive ? '🟢 Đang soạn hướng dẫn' : '📝 Soạn hướng dẫn') +
+          '</button>' +
+          (STUDIO_SONGS.length > 1 ? '<button type="button" class="btn sm danger" style="padding:1px 6px;font-size:11px" onclick="removeStudioSongItem(' + idx + ')" title="Xoá bài hát này">✕ Xoá</button>' : '') +
+        '</div>' +
+      '</div>' +
+      
+      '<div class="fld" style="margin-bottom:8px">' +
+        '<label>TÊN BÀI HÁT / CA SĨ</label>' +
+        '<input type="text" value="' + esc(s.title || '') + '" placeholder="VD: Nơi Này Có Anh - Sơn Tùng M-TP" oninput="updateStudioSongField(' + idx + ', \'title\', this.value)">' +
+      '</div>' +
+      
+      '<div class="fld" style="margin-bottom:8px">' +
+        '<label>LINK YOUTUBE BÀI HÁT (BEAT / HƯỚNG DẪN)</label>' +
+        '<div style="display:flex;gap:6px;align-items:center">' +
+          '<input type="text" value="' + esc(s.ytLink || '') + '" placeholder="https://www.youtube.com/watch?v=..." oninput="updateStudioSongField(' + idx + ', \'ytLink\', this.value)">' +
+          '<a id="cf_song_play_' + idx + '" href="' + esc(s.ytLink || '') + '" target="_blank" class="yt-pill-btn sm" style="display:' + (ytVisible ? 'inline-flex' : 'none') + ';white-space:nowrap">▶ Xem</a>' +
+        '</div>' +
+      '</div>' +
+
+      '<div class="two" style="margin-bottom:8px">' +
+        '<div class="fld"><label>NOTE CAO NHẤT BÀI HÁT</label><input type="text" value="' + esc(s.noteCao || '') + '" placeholder="G4, A4..." oninput="updateStudioSongField(' + idx + ', \'noteCao\', this.value)"></div>' +
+        '<div class="fld"><label>NOTE THẤP NHẤT BÀI HÁT</label><input type="text" value="' + esc(s.noteThap || '') + '" placeholder="C3, D3..." oninput="updateStudioSongField(' + idx + ', \'noteThap\', this.value)"></div>' +
+      '</div>' +
+
+      '<div style="margin-bottom:8px">' +
+        '<div class="fld">' +
+          '<label style="color:var(--teal);font-weight:700">QUÃNG GIỌNG HỌC VIÊN</label>' +
+          '<div class="student-vocal-pill" title="Lấy từ hồ sơ học viên ' + esc(CUR_STUDENT ? CUR_STUDENT.hoTen : '') + '">' +
+            '<div>' +
+              '<span style="color:var(--mut)">Thấp:</span> <b style="color:#4ade80">' + esc(stRange.low) + '</b>' +
+              '<span style="color:var(--mut);margin:0 4px">|</span>' +
+              '<span style="color:var(--mut)">Cao:</span> <b style="color:var(--gold)">' + esc(stRange.high) + '</b>' +
+            '</div>' +
+            '<span class="badge" style="background:#13281d;color:var(--teal);font-size:11px">' + esc(stRange.text) + '</span>' +
+          '</div>' +
+        '</div>' +
+      '</div>' +
+
+      '<div class="fld">' +
+        '<label>GHI CHÚ / TONE / LƯU Ý BÀI</label>' +
+        '<input type="text" value="' + esc(s.details || '') + '" placeholder="Tone nam Dm, xử lý nốt ngân ở cuối câu..." oninput="updateStudioSongField(' + idx + ', \'details\', this.value)">' +
+      '</div>' +
+    '</div>';
+  }).join('');
+}
+
+// ==================== DYNAMIC MULTI-TECHNIQUE EXERCISE MANAGEMENT ====================
+let STUDIO_TECHS = [];
+
+function addStudioTechItem(data) {
+  const t = data || {
+    id: 'tech_' + Date.now() + '_' + Math.floor(Math.random()*1000),
+    name: '',
+    ytLink: '',
+    notes: ''
+  };
+  STUDIO_TECHS.push(t);
+  renderStudioTechList();
+}
+
+function addQuickSampleTech(name, ytLink) {
+  addStudioTechItem({
+    id: 'tech_' + Date.now() + '_' + Math.floor(Math.random()*1000),
+    name: name || '',
+    ytLink: ytLink || '',
+    notes: ''
+  });
+}
+
+function removeStudioTechItem(idx) {
+  if (STUDIO_TECHS.length <= 1) {
+    STUDIO_TECHS[0] = { id: 'tech_' + Date.now(), name: '', ytLink: '', notes: '' };
+    renderStudioTechList();
+    return;
+  }
+  STUDIO_TECHS.splice(idx, 1);
+  renderStudioTechList();
+}
+
+function updateStudioTechField(idx, field, val) {
+  if (STUDIO_TECHS[idx]) {
+    STUDIO_TECHS[idx][field] = val;
+    if (field === 'ytLink') {
+      const btn = $('cf_tech_play_' + idx);
+      if (btn) {
+        if (val && val.trim().indexOf('http') === 0) {
+          btn.style.display = 'inline-flex';
+          btn.href = val.trim();
+        } else {
+          btn.style.display = 'none';
+        }
+      }
+    }
+  }
+}
+
+function renderStudioTechList() {
+  const container = $('cf_techListContainer');
+  if (!container) return;
+  if (!STUDIO_TECHS.length) {
+    STUDIO_TECHS = [{ id: 'tech_1', name: '', ytLink: '', notes: '' }];
+  }
+
+  container.innerHTML = STUDIO_TECHS.map(function(t, idx){
+    const ytVisible = (t.ytLink && t.ytLink.trim().indexOf('http') === 0);
+    return '<div class="studio-sub-card">' +
+      '<div class="studio-sub-card-head">' +
+        '<div class="studio-sub-card-title">' +
+          '<span>🎼 Kỹ thuật ' + (idx + 1) + '</span>' +
+          (t.name ? '<span style="color:#fff;font-weight:600">: ' + esc(t.name) + '</span>' : '') +
+        '</div>' +
+        (STUDIO_TECHS.length > 1 ? '<button type="button" class="btn sm danger" style="padding:1px 6px;font-size:11px" onclick="removeStudioTechItem(' + idx + ')" title="Xoá kỹ thuật này">✕ Xoá</button>' : '') +
+      '</div>' +
+      '<div class="fld" style="margin-bottom:8px">' +
+        '<label>TÊN BÀI TẬP / KỸ THUẬT</label>' +
+        '<input type="text" value="' + esc(t.name || '') + '" placeholder="VD: Lip trill, Belting nốt cao, Nén hơi..." oninput="updateStudioTechField(' + idx + ', \'name\', this.value)">' +
+      '</div>' +
+      '<div class="fld" style="margin-bottom:8px">' +
+        '<label>LINK YOUTUBE VIDEO BÀI TẬP (NẾU CÓ)</label>' +
+        '<div style="display:flex;gap:6px;align-items:center">' +
+          '<input type="text" value="' + esc(t.ytLink || '') + '" placeholder="https://www.youtube.com/watch?v=..." oninput="updateStudioTechField(' + idx + ', \'ytLink\', this.value)">' +
+          '<a id="cf_tech_play_' + idx + '" href="' + esc(t.ytLink || '') + '" target="_blank" class="yt-pill-btn sm" style="display:' + (ytVisible ? 'inline-flex' : 'none') + ';white-space:nowrap">🎬 Video</a>' +
+        '</div>' +
+      '</div>' +
+      '<div class="fld">' +
+        '<label>HƯỚNG DẪN TẬP LUYỆN / GHI CHÚ</label>' +
+        '<input type="text" value="' + esc(t.notes || '') + '" placeholder="Thả lỏng hàm dưới, tập 5 lần mỗi ngày..." oninput="updateStudioTechField(' + idx + ', \'notes\', this.value)">' +
+      '</div>' +
+    '</div>';
+  }).join('');
+}
+
+// ==================== SONG GUIDE BUILDER (DRAG & DROP + CẤU TRÚC CHUẨN 8 ĐOẠN) ====================
+let DRAG_SRC_INDEX = null;
+
+function resetDefaultSongStructure() {
+  CURRENT_SONG_SECTIONS = getDefaultSongStructure();
+  if (STUDIO_SONGS[ACTIVE_SONG_GUIDE_INDEX]) {
+    STUDIO_SONGS[ACTIVE_SONG_GUIDE_INDEX].guideSections = JSON.parse(JSON.stringify(CURRENT_SONG_SECTIONS));
+  }
+  renderSongGuideBuilder();
+}
+
+function insertSongSection(title, badge, text) {
+  const newSec = {
+    id: 'sec_' + Date.now() + '_' + Math.floor(Math.random()*1000),
+    title: title,
+    badge: badge || 'badge-custom',
+    text: text || ''
+  };
+  CURRENT_SONG_SECTIONS.push(newSec);
+  if (STUDIO_SONGS[ACTIVE_SONG_GUIDE_INDEX]) {
+    STUDIO_SONGS[ACTIVE_SONG_GUIDE_INDEX].guideSections = CURRENT_SONG_SECTIONS;
+  }
+  renderSongGuideBuilder();
+}
+
+function promptAddCustomSection() {
+  const name = prompt('Nhập tên đoạn cần thêm (VD: Intro, Hook, Drop, Solo, Điệp khúc cao trào...):', 'Intro');
+  if (name && name.trim()) {
+    insertSongSection(name.trim(), 'badge-custom', '');
+  }
+}
+
+function removeSongSection(idx) {
+  if (idx >= 0 && idx < CURRENT_SONG_SECTIONS.length) {
+    CURRENT_SONG_SECTIONS.splice(idx, 1);
+    if (STUDIO_SONGS[ACTIVE_SONG_GUIDE_INDEX]) {
+      STUDIO_SONGS[ACTIVE_SONG_GUIDE_INDEX].guideSections = CURRENT_SONG_SECTIONS;
+    }
+    renderSongGuideBuilder();
+  }
+}
+
+function duplicateSection(idx) {
+  if (CURRENT_SONG_SECTIONS[idx]) {
+    const src = CURRENT_SONG_SECTIONS[idx];
+    const copy = {
+      id: 'sec_' + Date.now() + '_' + Math.floor(Math.random()*1000),
+      title: src.title,
+      badge: src.badge,
+      text: src.text
+    };
+    CURRENT_SONG_SECTIONS.splice(idx + 1, 0, copy);
+    if (STUDIO_SONGS[ACTIVE_SONG_GUIDE_INDEX]) {
+      STUDIO_SONGS[ACTIVE_SONG_GUIDE_INDEX].guideSections = CURRENT_SONG_SECTIONS;
+    }
+    renderSongGuideBuilder();
+  }
+}
+
+function moveSectionUp(idx) {
+  if (idx > 0) {
+    const item = CURRENT_SONG_SECTIONS.splice(idx, 1)[0];
+    CURRENT_SONG_SECTIONS.splice(idx - 1, 0, item);
+    if (STUDIO_SONGS[ACTIVE_SONG_GUIDE_INDEX]) {
+      STUDIO_SONGS[ACTIVE_SONG_GUIDE_INDEX].guideSections = CURRENT_SONG_SECTIONS;
+    }
+    renderSongGuideBuilder();
+  }
+}
+
+function moveSectionDown(idx) {
+  if (idx < CURRENT_SONG_SECTIONS.length - 1) {
+    const item = CURRENT_SONG_SECTIONS.splice(idx, 1)[0];
+    CURRENT_SONG_SECTIONS.splice(idx + 1, 0, item);
+    if (STUDIO_SONGS[ACTIVE_SONG_GUIDE_INDEX]) {
+      STUDIO_SONGS[ACTIVE_SONG_GUIDE_INDEX].guideSections = CURRENT_SONG_SECTIONS;
+    }
+    renderSongGuideBuilder();
+  }
+}
+
+function clearAllSongSections() {
+  if (!CURRENT_SONG_SECTIONS.length) return;
+  const curSong = STUDIO_SONGS[ACTIVE_SONG_GUIDE_INDEX];
+  const songName = curSong && curSong.title ? (' của bài "' + curSong.title + '"') : '';
+  if (confirm('Bạn có chắc muốn xoá tất cả các đoạn hướng dẫn' + songName + '?')) {
+    CURRENT_SONG_SECTIONS = [];
+    if (STUDIO_SONGS[ACTIVE_SONG_GUIDE_INDEX]) {
+      STUDIO_SONGS[ACTIVE_SONG_GUIDE_INDEX].guideSections = [];
+    }
+    renderSongGuideBuilder();
+  }
+}
+
+function updateSectionText(idx, val) {
+  if (CURRENT_SONG_SECTIONS[idx]) {
+    CURRENT_SONG_SECTIONS[idx].text = val;
+    if (STUDIO_SONGS[ACTIVE_SONG_GUIDE_INDEX] && STUDIO_SONGS[ACTIVE_SONG_GUIDE_INDEX].guideSections) {
+      if (STUDIO_SONGS[ACTIVE_SONG_GUIDE_INDEX].guideSections[idx]) {
+        STUDIO_SONGS[ACTIVE_SONG_GUIDE_INDEX].guideSections[idx].text = val;
+      }
+    }
+  }
+}
+
+// HTML5 Drag and Drop handlers
+function handleSectionDragStart(e, idx) {
+  DRAG_SRC_INDEX = idx;
+  e.dataTransfer.effectAllowed = 'move';
+  e.dataTransfer.setData('text/plain', idx);
+  e.currentTarget.classList.add('dragging');
+}
+
+function handleSectionDragOver(e, idx) {
+  e.preventDefault();
+  e.dataTransfer.dropEffect = 'move';
+  const el = e.currentTarget;
+  if (!el.classList.contains('drag-over')) {
+    el.classList.add('drag-over');
+  }
+}
+
+function handleSectionDragLeave(e) {
+  e.currentTarget.classList.remove('drag-over');
+}
+
+function handleSectionDrop(e, targetIdx) {
+  e.preventDefault();
+  e.stopPropagation();
+  e.currentTarget.classList.remove('drag-over');
+  if (DRAG_SRC_INDEX !== null && DRAG_SRC_INDEX !== targetIdx) {
+    const movedItem = CURRENT_SONG_SECTIONS.splice(DRAG_SRC_INDEX, 1)[0];
+    CURRENT_SONG_SECTIONS.splice(targetIdx, 0, movedItem);
+    if (STUDIO_SONGS[ACTIVE_SONG_GUIDE_INDEX]) {
+      STUDIO_SONGS[ACTIVE_SONG_GUIDE_INDEX].guideSections = CURRENT_SONG_SECTIONS;
+    }
+    renderSongGuideBuilder();
+  }
+  DRAG_SRC_INDEX = null;
+}
+
+function handleSectionDragEnd(e) {
+  e.currentTarget.classList.remove('dragging');
+  document.querySelectorAll('.guide-sec-item').forEach(function(el){
+    el.classList.remove('drag-over');
+    el.classList.remove('dragging');
+  });
+  DRAG_SRC_INDEX = null;
+}
+
+function renderSongGuideBuilder() {
+  const container = $('cf_songGuideBuilder');
+  if (!container) return;
+  if (!CURRENT_SONG_SECTIONS || !CURRENT_SONG_SECTIONS.length) {
+    container.innerHTML = '<div style="color:var(--mut);font-size:12px;padding:14px;text-align:center;background:#080e0a;border:1px dashed var(--line);border-radius:10px">Bài hát này chưa có đoạn hướng dẫn nào. Bấm nút <b>"🎯 Cấu trúc chuẩn"</b> hoặc các nút chèn nhanh bên dưới.</div>';
+    return;
+  }
+
+  container.innerHTML = CURRENT_SONG_SECTIONS.map(function(sec, idx){
+    return '<div class="guide-sec-item" draggable="true" ' +
+      'ondragstart="handleSectionDragStart(event, ' + idx + ')" ' +
+      'ondragover="handleSectionDragOver(event, ' + idx + ')" ' +
+      'ondragleave="handleSectionDragLeave(event)" ' +
+      'ondrop="handleSectionDrop(event, ' + idx + ')" ' +
+      'ondragend="handleSectionDragEnd(event)">' +
+      '<div class="guide-sec-head">' +
+        '<div class="guide-sec-title-wrap">' +
+          '<span class="drag-handle" title="Giữ chuột và kéo để đổi thứ tự">⠿</span>' +
+          '<span class="guide-badge ' + (sec.badge || 'badge-custom') + '">' + esc(sec.title) + '</span>' +
+          '<small style="color:var(--mut);font-size:11px">#' + (idx + 1) + '</small>' +
+        '</div>' +
+        '<div class="guide-actions">' +
+          (idx > 0 ? '<button type="button" class="btn-guide-act" onclick="moveSectionUp(' + idx + ')" title="Di chuyển lên">▲</button>' : '') +
+          (idx < CURRENT_SONG_SECTIONS.length - 1 ? '<button type="button" class="btn-guide-act" onclick="moveSectionDown(' + idx + ')" title="Di chuyển xuống">▼</button>' : '') +
+          '<button type="button" class="btn-guide-act" onclick="duplicateSection(' + idx + ')" title="Nhân bản đoạn này">📋</button>' +
+          '<button type="button" class="btn-guide-act" style="color:var(--danger)" onclick="removeSongSection(' + idx + ')" title="Xoá đoạn này">✕</button>' +
+        '</div>' +
+      '</div>' +
+      '<textarea class="guide-sec-textarea" placeholder="Điền hướng dẫn hát cho đoạn ' + esc(sec.title) + ' (cách lấy hơi, nốt chuyển, cảm xúc, dynamic...)" oninput="updateSectionText(' + idx + ', this.value)">' + esc(sec.text || '') + '</textarea>' +
+    '</div>';
+  }).join('');
+}
+
+function getSongGuideJson() {
+  syncActiveSongGuideFromDom();
+  return JSON.stringify(CURRENT_SONG_SECTIONS);
+}
+
+function loadSongGuideFromJson(jsonOrStr) {
+  if (!jsonOrStr) {
+    resetDefaultSongStructure();
+    return;
+  }
+  try {
+    if (typeof jsonOrStr === 'string' && jsonOrStr.trim().startsWith('[')) {
+      CURRENT_SONG_SECTIONS = JSON.parse(jsonOrStr);
+    } else if (typeof jsonOrStr === 'string' && jsonOrStr.trim().length > 0) {
+      CURRENT_SONG_SECTIONS = [
+        { id: 'sec_leg_1', title: 'Hướng dẫn tổng quan', badge: 'badge-custom', text: jsonOrStr }
+      ];
+    } else if (Array.isArray(jsonOrStr)) {
+      CURRENT_SONG_SECTIONS = jsonOrStr;
+    } else {
+      resetDefaultSongStructure();
+    }
+  } catch(e) {
+    resetDefaultSongStructure();
+  }
+  if (STUDIO_SONGS[ACTIVE_SONG_GUIDE_INDEX]) {
+    STUDIO_SONGS[ACTIVE_SONG_GUIDE_INDEX].guideSections = CURRENT_SONG_SECTIONS;
+  }
+  renderSongGuideBuilder();
+}
+
+function aiFillSongGuide() {
+  syncActiveSongGuideFromDom();
+  const curSong = STUDIO_SONGS[ACTIVE_SONG_GUIDE_INDEX] || STUDIO_SONGS[0] || {};
+  let target = curSong.ytLink || curSong.title;
+  if (!target) {
+    target = prompt('Nhập tên bài hát hoặc link YouTube để AI gợi ý hướng dẫn:', '');
+  }
+  if (!target || !target.trim()) {
+    toast('⚠️ Vui lòng nhập Tên bài hát hoặc link YouTube trước');
+    return;
+  }
+
+  toast('✨ AI đang phân tích cấu trúc bài hát ' + (curSong.title ? ('"' + curSong.title + '"') : '') + '...');
+  google.script.run.withSuccessHandler(function(res){
+    if (res) {
+      toast('✅ Đã phân tích xong gợi ý bài hát!');
+      insertSongSection('Gợi ý xử lý AI', 'badge-chorus', res);
+    }
+  }).aiAnalyzeSong({
+    linkYoutube: target.trim(),
+    quangGiong: CUR_STUDENT ? CUR_STUDENT.quangGiong : ''
+  });
+}
+
+// ĐỒNG BỘ DỮ LIỆU TỪ FORM TRƯỚC KHI LƯU
+function syncStudioSongsAndTechsFromDom() {
+  const songCards = document.querySelectorAll('#cf_songsListContainer .studio-sub-card');
+  songCards.forEach(function(card, idx){
+    if (!STUDIO_SONGS[idx]) {
+      STUDIO_SONGS[idx] = { id: 'song_' + idx, title: '', ytLink: '', noteCao: '', noteThap: '', tone: '0', details: '', guideSections: getDefaultSongStructure() };
+    }
+    const textInputs = card.querySelectorAll('input');
+    const select = card.querySelector('select.tone-select');
+    if (textInputs.length >= 1) STUDIO_SONGS[idx].title   = textInputs[0].value;
+    if (textInputs.length >= 2) STUDIO_SONGS[idx].ytLink  = textInputs[1].value;
+    if (textInputs.length >= 3) STUDIO_SONGS[idx].noteCao = textInputs[2].value;
+    if (textInputs.length >= 4) STUDIO_SONGS[idx].noteThap= textInputs[3].value;
+    if (select) STUDIO_SONGS[idx].tone = select.value;
+    if (textInputs.length >= 5) STUDIO_SONGS[idx].details = textInputs[4].value;
+  });
+
+  const techCards = document.querySelectorAll('#cf_techListContainer .studio-sub-card');
+  techCards.forEach(function(card, idx){
+    if (!STUDIO_TECHS[idx]) {
+      STUDIO_TECHS[idx] = { id: 'tech_' + idx, name: '', ytLink: '', notes: '' };
+    }
+    const inputs = card.querySelectorAll('input');
+    if (inputs.length >= 1) STUDIO_TECHS[idx].name  = inputs[0].value;
+    if (inputs.length >= 2) STUDIO_TECHS[idx].ytLink = inputs[1].value;
+    if (inputs.length >= 3) STUDIO_TECHS[idx].notes = inputs[2].value;
+  });
+
+  syncActiveSongGuideFromDom();
+}
+
+// ==================== STUDIO GIẢNG DẠY (PREMIUM MUSICAL FLOW) ====================
+// ==================== PHIẾU CHẤM BUỔI HỌC (MODULE 1) ====================
+const SCORE_CRITERIA = [
+  { key: 'pitch',      name: 'Cao độ (Pitch)',                  desc: 'Hát đúng nốt, ít phô',              short: 'Pitch' },
+  { key: 'rhythm',     name: 'Nhịp phách (Rhythm)',             desc: 'Vào đúng nhịp, không sớm/trễ',      short: 'Rhythm' },
+  { key: 'breath',     name: 'Hơi thở (Breath)',                desc: 'Lấy hơi đúng, không hụt giữa câu',  short: 'Breath' },
+  { key: 'tone',       name: 'Chất giọng (Tone)',               desc: 'Âm thoải mái, không gằn cổ',        short: 'Tone' },
+  { key: 'expression', name: 'Biểu cảm (Expression)',           desc: 'Thể hiện cảm xúc bài hát',          short: 'Express' },
+  { key: 'focusSkill', name: 'Kỹ thuật trọng tâm (Focus Skill)', desc: 'Kỹ thuật đang luyện buổi này',     short: 'Focus' },
+  { key: 'homework',   name: 'Bài tập về nhà (Homework)',       desc: 'HV có luyện tập ở nhà không',       short: 'BTVN' },
+  { key: 'confidence', name: 'Tự tin & Tương tác (Confidence)', desc: 'Dám hát, chủ động, không run',      short: 'Confid' }
+];
+const SCORE_LEVELS = [
+  { v: 1, icon: '🔴', label: 'Không tốt' },
+  { v: 2, icon: '🟡', label: 'Tốt' },
+  { v: 3, icon: '🟢', label: 'Xuất sắc' }
+];
+const FOCUS_SKILLS = ['Mixvoice', 'Belting', 'Falsetto', 'Head voice', 'Vibrato', 'Legato', 'Staccato', 'Breath control', 'Khẩu hình', 'Lip trill', 'Khác'];
+const GRADE_TEXT = { A: 'Xuất sắc', B: 'Tốt', C: 'Trung bình', D: 'Cần cải thiện' };
+
+let STUDIO_GROUP = [];   // Học viên trong buổi học (1 người hoặc nhóm)
+let SCORECARDS = [];     // [{hocVienId, hoTen, scores:{}, focusSkillName, note}]
+let SC_ACTIVE = 0;
+
+function scoreIcon(v) {
+  const lv = SCORE_LEVELS.filter(function(l){ return l.v === parseInt(v, 10); })[0];
+  return lv ? lv.icon : '⚪';
+}
+
+function gradeFromTotal(t) {
+  if (t >= 21) return 'A';
+  if (t >= 16) return 'B';
+  if (t >= 11) return 'C';
+  return 'D';
+}
+
+function calcScoreSummary(scores) {
+  let total = 0, count = 0;
+  SCORE_CRITERIA.forEach(function(c){
+    const v = parseInt((scores || {})[c.key], 10);
+    if (v >= 1 && v <= 3) { total += v; count++; }
+  });
+  const complete = count === SCORE_CRITERIA.length;
+  return { total: total, count: count, complete: complete, grade: complete ? gradeFromTotal(total) : '' };
+}
+
+function parseScoreCard(json) {
+  if (!json) return null;
+  try {
+    const o = typeof json === 'string' ? JSON.parse(json) : json;
+    return (o && typeof o === 'object' && Object.keys(o).length) ? o : null;
+  } catch(e) { return null; }
+}
+
+function initScoreCards(students, existingSession) {
+  SCORECARDS = students.map(function(s, i){
+    const card = { hocVienId: s.id, hoTen: s.hoTen, scores: {}, focusSkillName: '', note: '' };
+    if (existingSession && i === 0) {
+      card.scores = parseScoreCard(existingSession.scoreCardJson) || {};
+      card.focusSkillName = existingSession.focusSkillName || '';
+      card.note = existingSession.scoreNote || '';
+    }
+    return card;
+  });
+  SC_ACTIVE = 0;
+  renderScoreCard();
+}
+
+function renderScoreCard() {
+  const tabs = $('cf_scoreTabs');
+  const box = $('cf_scoreCard');
+  if (!box) return;
+  const isGroup = SCORECARDS.length > 1;
+
+  tabs.style.display = isGroup ? 'flex' : 'none';
+  tabs.innerHTML = isGroup ? SCORECARDS.map(function(c, i){
+    const sum = calcScoreSummary(c.scores);
+    return '<button type="button" class="sc-tab ' + (i === SC_ACTIVE ? 'active' : '') + '" onclick="switchScoreCardTab(' + i + ')">' +
+      esc(c.hoTen) + (sum.complete ? ' ✓' : ' <span class="sc-tab-prog">' + sum.count + '/8</span>') + '</button>';
+  }).join('') : '';
+
+  const card = SCORECARDS[SC_ACTIVE];
+  if (!card) { box.innerHTML = ''; return; }
+  const sum = calcScoreSummary(card.scores);
+
+  const critHtml = SCORE_CRITERIA.map(function(c, i){
+    const val = parseInt(card.scores[c.key], 10) || 0;
+    const focusSel = c.key === 'focusSkill'
+      ? '<select class="sc-focus-select" onchange="setFocusSkillName(this.value)">' +
+          '<option value="">— Chọn kỹ thuật trọng tâm —</option>' +
+          FOCUS_SKILLS.map(function(k){ return '<option ' + (card.focusSkillName === k ? 'selected' : '') + '>' + k + '</option>'; }).join('') +
+        '</select>'
+      : '';
+    return '<div class="sc-crit">' +
+      '<div class="sc-crit-head"><span class="sc-crit-name">' + (i + 1) + '. ' + c.name + '</span><span class="sc-crit-desc">' + c.desc + '</span></div>' +
+      focusSel +
+      '<div class="sc-levels ' + (val ? 'has-val' : '') + '">' +
+        SCORE_LEVELS.map(function(l){
+          return '<button type="button" class="sc-btn l' + l.v + (val === l.v ? ' on' : '') + '" onclick="setScoreLevel(\'' + c.key + '\',' + l.v + ')">' +
+            l.icon + ' ' + l.label + (val === l.v ? ' ✓' : '') + '</button>';
+        }).join('') +
+      '</div>' +
+    '</div>';
+  }).join('');
+
+  const gradeHtml = sum.complete
+    ? '<span class="grade-badge grade-' + sum.grade + '">Xếp loại: ' + sum.grade + ' (' + GRADE_TEXT[sum.grade] + ')</span>'
+    : '<span class="grade-badge grade-none">Đã chấm ' + sum.count + '/8 tiêu chí</span>';
+
+  box.innerHTML = critHtml +
+    '<div class="sc-summary"><span>Tổng: <b class="total">' + sum.total + '</b>/24</span>' + gradeHtml + '</div>' +
+    '<div class="fld" style="margin-bottom:0">' +
+      '<label>' + (isGroup ? 'GHI CHÚ RIÊNG CHO ' + esc(card.hoTen).toUpperCase() + ' (gộp vào nhận xét của HV này)' : 'GHI CHÚ GV (TỰ DO)') + '</label>' +
+      '<textarea placeholder="Ghi chú về điểm số, điểm cần cải thiện..." oninput="setScoreNote(this.value)">' + esc(card.note || '') + '</textarea>' +
+    '</div>';
+}
+
+function setScoreLevel(key, v) {
+  const card = SCORECARDS[SC_ACTIVE];
+  if (!card) return;
+  if (parseInt(card.scores[key], 10) === v) delete card.scores[key]; // bấm lại để bỏ chọn
+  else card.scores[key] = v;
+  renderScoreCard();
+}
+
+function setFocusSkillName(v) { if (SCORECARDS[SC_ACTIVE]) SCORECARDS[SC_ACTIVE].focusSkillName = v; }
+function setScoreNote(v) { if (SCORECARDS[SC_ACTIVE]) SCORECARDS[SC_ACTIVE].note = v; }
+
+function switchScoreCardTab(i) {
+  SC_ACTIVE = i;
+  renderScoreCard();
+  if (!EDITING_SESSION_ID && STUDIO_GROUP[i]) renderPrevSessionPanel(STUDIO_GROUP[i]);
+}
+
+function scoreFieldsFor(card) {
+  const sum = calcScoreSummary(card.scores);
+  return {
+    scoreCardJson:  sum.count ? JSON.stringify(card.scores) : '',
+    totalScore:     sum.count ? sum.total : '',
+    sessionGrade:   sum.grade,
+    focusSkillName: card.focusSkillName || '',
+    scoreNote:      card.note || '',
+    diemSo:         sum.complete ? Math.round(sum.total / 24 * 10) : ''
+  };
+}
+
+// ==================== BUỔI HỌC TRƯỚC (MODULE 2) ====================
+let PREV_PANEL_COLLAPSED = false;
+
+function getLastSession(s) {
+  const list = ((s && s.buoiHoc) || []).slice();
+  if (!list.length) return null;
+  list.sort(function(a, b){
+    const d = (parseInt(a.buoiSo, 10) || 0) - (parseInt(b.buoiSo, 10) || 0);
+    return d !== 0 ? d : String(a.ngayHoc || '').localeCompare(String(b.ngayHoc || ''));
+  });
+  return list[list.length - 1];
+}
+
+function getNextBuoiNumber(s) {
+  if (s && Array.isArray(s.buoiHoc)) return s.buoiHoc.length + 1;
+  return (parseInt(s && s.soBuoiDaHoc, 10) || 0) + 1;
+}
+
+function togglePrevSessionPanel() {
+  PREV_PANEL_COLLAPSED = !PREV_PANEL_COLLAPSED;
+  $('cf_prevSessionPanel').classList.toggle('collapsed', PREV_PANEL_COLLAPSED);
+  const t = $('cf_prevToggle');
+  if (t) t.textContent = PREV_PANEL_COLLAPSED ? 'Mở rộng ▼' : 'Thu gọn ▲';
+}
+
+function renderPrevSessionPanel(student) {
+  const panel = $('cf_prevSessionPanel');
+  if (!panel) return;
+  if (EDITING_SESSION_ID || !student) { panel.style.display = 'none'; return; }
+  panel.style.display = 'block';
+  panel.classList.toggle('collapsed', PREV_PANEL_COLLAPSED);
+  const who = STUDIO_GROUP.length > 1 ? ' — ' + esc(student.hoTen) : '';
+  const head = function(title){
+    return '<div class="prev-sess-head" onclick="togglePrevSessionPanel()"><h3>📋 ' + title + who + '</h3>' +
+      '<button type="button" class="btn ghost sm" id="cf_prevToggle">' + (PREV_PANEL_COLLAPSED ? 'Mở rộng ▼' : 'Thu gọn ▲') + '</button></div>';
+  };
+
+  // Chưa có chi tiết buổi học → nạp ngầm từ server
+  if (!Array.isArray(student.buoiHoc)) {
+    const cached = CACHE_STUDENTS_DETAIL[student.id];
+    if (cached && Array.isArray(cached.buoiHoc)) { replaceGroupMember(cached); renderPrevSessionPanel(cached); return; }
+    panel.innerHTML = head('BUỔI HỌC TRƯỚC') + '<div class="prev-sess-body"><span class="spin"></span> Đang tải buổi học trước...</div>';
+    google.script.run.withSuccessHandler(function(full){
+      if (!full) return;
+      CACHE_STUDENTS_DETAIL[full.id] = full;
+      replaceGroupMember(full);
+      const active = STUDIO_GROUP[SC_ACTIVE] || STUDIO_GROUP[0];
+      if ($('view-classroom-flow').style.display === 'block' && active && String(active.id) === String(full.id)) {
+        renderPrevSessionPanel(full);
+        renderFinalSessionBanner();
+      }
+    }).getStudent(student.id);
+    return;
+  }
+
+  const b = getLastSession(student);
+  if (!b) {
+    panel.innerHTML = head('BUỔI HỌC TRƯỚC') + '<div class="prev-sess-body" style="color:var(--mut)">Chưa có buổi học trước — đây là buổi học đầu tiên.</div>';
+    return;
+  }
+
+  // Bài hát
+  let songs = [];
+  try { const p = typeof b.songsJson === 'string' ? JSON.parse(b.songsJson || '[]') : (b.songsJson || []); if (Array.isArray(p)) songs = p; } catch(e) {}
+  let songTxt = songs.filter(function(s){ return s && s.title; }).map(function(s){
+    return esc(s.title) + ((s.tone && s.tone !== '0') ? ' <small style="color:var(--gold)">(Tone ' + esc(s.tone) + ')</small>' : '');
+  }).join(', ');
+  if (!songTxt && b.baiHat) songTxt = esc(b.baiHat);
+
+  // Kỹ thuật
+  let techs = [];
+  try { const p = typeof b.techsJson === 'string' ? JSON.parse(b.techsJson || '[]') : (b.techsJson || []); if (Array.isArray(p)) techs = p; } catch(e) {}
+  let techTxt = techs.filter(function(t){ return t && t.name; }).map(function(t){ return esc(t.name); }).join(', ');
+  if (!techTxt && b.kyThuat) techTxt = esc(String(b.kyThuat).replace(/^•\s*/, ''));
+
+  // Phiếu chấm
+  const sc = parseScoreCard(b.scoreCardJson);
+  let scoreHtml = '';
+  if (sc) {
+    const sum = calcScoreSummary(sc);
+    scoreHtml = '<div style="margin-top:6px"><b>Phiếu chấm:</b>' + (b.focusSkillName ? ' <small style="color:var(--mut)">(Focus: ' + esc(b.focusSkillName) + ')</small>' : '') + '</div>' +
+      '<div class="prev-score-grid">' + SCORE_CRITERIA.map(function(c){
+        return '<span>' + c.short + ': ' + scoreIcon(sc[c.key]) + '</span>';
+      }).join('') + '</div>' +
+      '<div>→ Tổng: <b>' + sum.total + '/24</b>' + (sum.grade ? ' · <span class="grade-badge grade-' + sum.grade + '">Loại ' + sum.grade + '</span>' : ' <small style="color:var(--mut)">(chấm ' + sum.count + '/8)</small>') + '</div>';
+  } else if (b.diemSo) {
+    scoreHtml = '<div style="margin-top:6px"><b>Điểm buổi học:</b> ' + esc(b.diemSo) + '/10 <small style="color:var(--mut)">(phiếu cũ)</small></div>';
+  }
+
+  panel.innerHTML = head('BUỔI HỌC TRƯỚC (Buổi ' + esc(b.buoiSo || '?') + ' · ' + fmtDate(b.ngayHoc) + ')') +
+    '<div class="prev-sess-body">' +
+      (songTxt ? '<div><b>🎵 Bài hát:</b> ' + songTxt + '</div>' : '') +
+      (techTxt ? '<div><b>🎼 Kỹ thuật:</b> ' + techTxt + '</div>' : '') +
+      scoreHtml +
+      (b.nhanXet ? '<div style="margin-top:6px;color:var(--teal)"><b>GV nhận xét:</b> "' + esc(b.nhanXet) + '"</div>' : '') +
+      (b.baiTapVeNha ? '<div style="color:var(--gold)"><b>BTVN đã giao:</b> "' + esc(b.baiTapVeNha) + '"</div>' : '') +
+    '</div>';
+}
+
+function replaceGroupMember(full) {
+  STUDIO_GROUP.forEach(function(m, i){
+    if (String(m.id) === String(full.id)) STUDIO_GROUP[i] = full;
+  });
+}
+
+// ==================== NHẮC TEST RANK CUỐI KHOÁ (MODULE 7) ====================
+const RANK_ORDER = ['A', 'B', 'C', 'D'];
+let FINAL_BANNER_DISMISSED = {};
+
+function nextRankOf(r) {
+  const i = RANK_ORDER.indexOf(String(r || 'A').toUpperCase());
+  if (i === -1) return 'B';
+  return i >= RANK_ORDER.length - 1 ? 'D (cao nhất)' : RANK_ORDER[i + 1];
+}
+
+function getCourseProgress(s) {
+  const total = parseInt(s.soBuoiKhoa || s.soBuoiDeal, 10) || 0;
+  const hasCounter = s.soBuoiConLai !== undefined && s.soBuoiConLai !== null && s.soBuoiConLai !== '';
+  const done = hasCounter ? (parseInt(s.soBuoiDaHoc, 10) || 0)
+    : (Array.isArray(s.buoiHoc) ? s.buoiHoc.length : (parseInt(s.soBuoiDaHoc, 10) || 0));
+  const left = hasCounter ? Math.max(0, parseInt(s.soBuoiConLai, 10) || 0) : Math.max(0, total - done);
+  return { total: total, done: done, left: left };
+}
+
+function renderFinalSessionBanner() {
+  const box = $('cf_finalBanner');
+  if (!box) return;
+  if (EDITING_SESSION_ID) { box.style.display = 'none'; return; }
+  const items = STUDIO_GROUP.filter(function(s){
+    const p = getCourseProgress(s);
+    return p.total > 0 && p.left <= 1 && !FINAL_BANNER_DISMISSED[s.id];
+  });
+  if (!items.length) { box.style.display = 'none'; box.innerHTML = ''; return; }
+  box.style.display = 'block';
+  box.innerHTML = items.map(function(s){
+    const p = getCourseProgress(s);
+    const desc = p.left === 1
+      ? 'Đây là buổi học cuối cùng (' + p.total + '/' + p.total + ') của khoá hiện tại.'
+      : 'Khoá hiện tại đã học hết ' + p.done + '/' + p.total + ' buổi — nhớ gia hạn khoá mới.';
+    return '<div class="final-banner">' +
+      '<h3>🎓 BUỔI HỌC CUỐI KHOÁ — Nhắc Test Rank!' + (STUDIO_GROUP.length > 1 ? ' · ' + esc(s.hoTen) : '') + '</h3>' +
+      '<p>' + desc + ' Hãy thực hiện Test Rank để đánh giá tiến bộ và đề xuất lộ trình khoá tiếp theo.</p>' +
+      '<p>Rank hiện tại: <b>' + esc(s.rank || 'A') + '</b> · Rank mục tiêu: <b style="color:var(--teal)">' + nextRankOf(s.rank) + '</b></p>' +
+      '<div class="row-flex">' +
+        '<button type="button" class="btn gold" onclick="openFinalTestFor(\'' + s.id + '\')">🪄 Test Rank ngay</button>' +
+        '<button type="button" class="btn ghost" onclick="dismissFinalBanner(\'' + s.id + '\')">Bỏ qua</button>' +
+      '</div>' +
+    '</div>';
+  }).join('');
+}
+
+function dismissFinalBanner(id) {
+  FINAL_BANNER_DISMISSED[id] = true;
+  renderFinalSessionBanner();
+}
+
+function openFinalTestFor(id) {
+  const s = STUDIO_GROUP.filter(function(x){ return String(x.id) === String(id); })[0];
+  if (s) openTestModalFor(s, 'studio');
+}
+
+// ==================== HỌC NHÓM (MODULE 4) ====================
+function getGroupClasses() {
+  return String(APP_CONFIG.groupClasses || 'TN12').split(',')
+    .map(function(x){ return x.trim().toUpperCase(); }).filter(Boolean);
+}
+
+function getGroupCandidates(s) {
+  const lop = String(s.lop || '').trim().toUpperCase();
+  if (!lop || getGroupClasses().indexOf(lop) === -1) return [];
+  return getOfficialStudents().filter(function(x){
+    return String(x.id) !== String(s.id) &&
+      String(x.lop || '').trim().toUpperCase() === lop &&
+      String(x.tinhTrang || '').indexOf('Đang học') >= 0;
+  });
+}
+
+function groupMemberLabel(s) {
+  const p = getCourseProgress(s);
+  return '<b>' + esc(s.hoTen) + '</b> <small>(' + esc(s.lop || '—') + ' · GV ' + esc(s.giaoVien || '—') + ' · Còn ' + p.left + ' buổi)</small>';
+}
+
+function openGroupSessionModal(mates) {
+  $('grp_intro').innerHTML = 'Học viên <b>' + esc(CUR_STUDENT.hoTen) + '</b> thuộc lớp <b>' + esc(CUR_STUDENT.lop) + '</b>. Bạn muốn bắt đầu buổi học nhóm?';
+  $('grp_list').innerHTML =
+    '<label class="grp-item"><input type="checkbox" checked disabled> ' + groupMemberLabel(CUR_STUDENT) + '</label>' +
+    mates.map(function(m){
+      return '<label class="grp-item"><input type="checkbox" class="grp-chk" value="' + m.id + '" checked> ' + groupMemberLabel(m) + '</label>';
+    }).join('');
+  open_('mGroupSession');
+}
+
+function startGroupFromModal() {
+  const ids = Array.from(document.querySelectorAll('.grp-chk:checked')).map(function(c){ return c.value; });
+  const members = ids.map(function(id){
+    return CACHE_STUDENTS_DETAIL[id] || ALL_STUDENTS.filter(function(x){ return String(x.id) === String(id); })[0];
+  }).filter(Boolean);
+  close_('mGroupSession');
+  beginClassroomFlow(members);
+}
+
+function startSoloFromGroupModal() {
+  close_('mGroupSession');
+  beginClassroomFlow([]);
+}
+
+// ==================== STUDIO GIẢNG DẠY ====================
+function startClassroomFlow() {
+  if (!CUR_STUDENT) return;
+  const mates = getGroupCandidates(CUR_STUDENT);
+  if (mates.length) { openGroupSessionModal(mates); return; }
+  beginClassroomFlow([]);
+}
+
+function setStudioHeader() {
+  const nextBuoi = getNextBuoiNumber(CUR_STUDENT);
+  if (STUDIO_GROUP.length > 1) {
+    $('cfStudentName').innerHTML = STUDIO_GROUP.map(function(s){ return esc(s.hoTen); }).join(' + ') +
+      ' · <b style="color:var(--gold)">Buổi ' + nextBuoi + ' (Nhóm ' + esc(CUR_STUDENT.lop || '') + ')</b>';
+  } else {
+    $('cfStudentName').innerHTML = esc(CUR_STUDENT.hoTen) + ' · <b style="color:var(--gold)">Buổi ' + nextBuoi + '</b>';
+  }
+  $('cf_nhanXetLabel').textContent = STUDIO_GROUP.length > 1
+    ? 'NHẬN XÉT CHUNG (TẤT CẢ HỌC VIÊN TRONG NHÓM THẤY)'
+    : 'NHẬN XÉT CỦA GIÁO VIÊN (HỌC VIÊN CÓ THỂ XEM)';
+}
+
+function enterStudioLayout() {
+  $('mainSidebar').style.display  = 'none';
+  document.body.style.paddingLeft = '0';
+  showOnlyView('classroom-flow');
+}
+
+function beginClassroomFlow(groupMembers) {
+  EDITING_SESSION_ID = null;
+  FINAL_BANNER_DISMISSED = {};
+  STUDIO_GROUP = [CUR_STUDENT].concat(groupMembers || []);
+  setStudioHeader();
+  enterStudioLayout();
+
+  // Khởi tạo bài hát & kỹ thuật trống
+  STUDIO_SONGS = [{
+    id: 'song_' + Date.now(),
+    title: '',
+    ytLink: '',
+    noteCao: '',
+    noteThap: '',
+    tone: '0',
+    details: '',
+    guideSections: getDefaultSongStructure()
+  }];
+  ACTIVE_SONG_GUIDE_INDEX = 0;
+  CURRENT_SONG_SECTIONS = STUDIO_SONGS[0].guideSections;
+  renderStudioSongsList();
+  renderSongGuideTabs();
+  renderSongGuideBuilder();
+
+  STUDIO_TECHS = [{ id: 'tech_' + Date.now(), name: '', ytLink: '', notes: '' }];
+  renderStudioTechList();
+
+  $('cf_btvn').value        = '';
+  $('cf_nhanXet').value     = '';
+  $('cf_ghiChuNoiBo').value = '';
+
+  initScoreCards(STUDIO_GROUP, null);
+  renderPrevSessionPanel(CUR_STUDENT);
+  renderFinalSessionBanner();
+
+  // Nạp chi tiết các HV khác trong nhóm (để biết số buổi chính xác & buổi trước)
+  STUDIO_GROUP.slice(1).forEach(function(m){
+    if (Array.isArray(m.buoiHoc)) return;
+    google.script.run.withSuccessHandler(function(full){
+      if (!full) return;
+      CACHE_STUDENTS_DETAIL[full.id] = full;
+      replaceGroupMember(full);
+      renderFinalSessionBanner();
+    }).getStudent(m.id);
+  });
+
+  window.scrollTo(0,0);
+}
+
+// NẠP LẠI DỮ LIỆU BUỔI HỌC CŨ VÀO STUDIO
+function openPastSessionInStudio(sessionId) {
+  if (!CUR_STUDENT) return;
+  const list = CUR_STUDENT.buoiHoc || [];
+  const b = list.find(function(x){ return String(x.id) === String(sessionId); }) || list[list.length - 1];
+  if (!b) { toast('⚠️ Không tìm thấy dữ liệu buổi học'); return; }
+
+  EDITING_SESSION_ID = b.id || sessionId;
+  $('cfStudentName').innerHTML = esc(CUR_STUDENT.hoTen) + ' · <b style="color:var(--gold)">Đang xem: Buổi ' + (b.buoiSo || '') + ' (' + fmtDate(b.ngayHoc) + ')</b>';
+
+  // Ẩn sidebar để full màn hình studio
+  $('mainSidebar').style.display          = 'none';
+  document.body.style.paddingLeft         = '0';
+  $('view-student-profile').style.display = 'none';
+  $('view-classroom-flow').style.display  = 'block';
+
+  // Restore songs
+  if (b.songsJson) {
+    try {
+      STUDIO_SONGS = typeof b.songsJson === 'string' ? JSON.parse(b.songsJson) : b.songsJson;
+    } catch(e) {
+      STUDIO_SONGS = [];
+    }
+  } else {
+    STUDIO_SONGS = [];
+  }
+  if (!Array.isArray(STUDIO_SONGS) || !STUDIO_SONGS.length) {
+    STUDIO_SONGS = [{
+      id: 'song_1',
+      title: (b.baiHat && b.baiHat.indexOf('http') === 0) ? 'Bài hát thực hành' : (b.baiHat || ''),
+      ytLink: b.linkYoutube || ((b.baiHat && b.baiHat.indexOf('http') === 0) ? b.baiHat : ''),
+      noteCao: b.noteCao || '',
+      noteThap: b.noteThap || '',
+      tone: '0',
+      details: b.noiDung || '',
+      guideSections: getDefaultSongStructure()
+    }];
+    if (b.huongDanHatJson) {
+      try {
+        if (typeof b.huongDanHatJson === 'string' && b.huongDanHatJson.trim().startsWith('[')) {
+          STUDIO_SONGS[0].guideSections = JSON.parse(b.huongDanHatJson);
+        }
+      } catch(e) {}
+    }
+  } else {
+    STUDIO_SONGS.forEach(function(s, sIdx){
+      if (!s.guideSections || !Array.isArray(s.guideSections) || !s.guideSections.length) {
+        if (sIdx === 0 && b.huongDanHatJson) {
+          try {
+            if (typeof b.huongDanHatJson === 'string' && b.huongDanHatJson.trim().startsWith('[')) {
+              s.guideSections = JSON.parse(b.huongDanHatJson);
+            } else {
+              s.guideSections = getDefaultSongStructure();
+            }
+          } catch(e) {
+            s.guideSections = getDefaultSongStructure();
+          }
+        } else {
+          s.guideSections = getDefaultSongStructure();
+        }
+      }
+      if (s.tone === undefined) s.tone = '0';
+    });
+    if (!STUDIO_SONGS[0].ytLink && b.linkYoutube) {
+      STUDIO_SONGS[0].ytLink = b.linkYoutube;
+    }
+  }
+  ACTIVE_SONG_GUIDE_INDEX = 0;
+  CURRENT_SONG_SECTIONS = STUDIO_SONGS[0].guideSections;
+  renderStudioSongsList();
+  renderSongGuideTabs();
+  renderSongGuideBuilder();
+
+  // Restore techs
+  if (b.techsJson) {
+    try {
+      STUDIO_TECHS = typeof b.techsJson === 'string' ? JSON.parse(b.techsJson) : b.techsJson;
+    } catch(e) {
+      STUDIO_TECHS = [];
+    }
+  } else {
+    STUDIO_TECHS = [];
+  }
+  if (!Array.isArray(STUDIO_TECHS) || !STUDIO_TECHS.length) {
+    STUDIO_TECHS = [{
+      id: 'tech_1',
+      name: b.kyThuat || '',
+      ytLink: b.linkYoutubeKyThuat || '',
+      notes: ''
+    }];
+  } else {
+    if (!STUDIO_TECHS[0].ytLink && b.linkYoutubeKyThuat) {
+      STUDIO_TECHS[0].ytLink = b.linkYoutubeKyThuat;
+    }
+  }
+  renderStudioTechList();
+
+  $('cf_btvn').value        = b.baiTapVeNha || '';
+  $('cf_nhanXet').value     = b.nhanXet || '';
+  $('cf_ghiChuNoiBo').value = b.ghiChuNoiBo || '';
+  
+  STUDIO_GROUP = [CUR_STUDENT];
+  $('cf_nhanXetLabel').textContent = 'NHẬN XÉT CỦA GIÁO VIÊN (HỌC VIÊN CÓ THỂ XEM)';
+  initScoreCards(STUDIO_GROUP, b);
+  renderPrevSessionPanel(null);
+  renderFinalSessionBanner();
+
+  toast('✅ Đã nạp lại dữ liệu Buổi ' + (b.buoiSo || ''));
+  window.scrollTo(0,0);
+}
+
+// NẠP LẠI BÀI HÁT ĐÃ PHÂN TÍCH VÀO STUDIO
+function openPastSongInStudio(songId) {
+  if (!CUR_STUDENT) return;
+  const songs = CUR_STUDENT.phanTichBai || [];
+  const p = songs.find(function(x){ return String(x.id) === String(songId); }) || songs[songs.length - 1];
+  if (!p) { toast('⚠️ Không tìm thấy bài hát'); return; }
+
+  EDITING_SESSION_ID = null;
+  $('cfStudentName').innerHTML = esc(CUR_STUDENT.hoTen) + ' · <b style="color:var(--gold)">Giáo án: ' + esc(p.tenBai || 'Bài hát') + '</b>';
+
+  $('mainSidebar').style.display          = 'none';
+  document.body.style.paddingLeft         = '0';
+  $('view-student-profile').style.display = 'none';
+  $('view-classroom-flow').style.display  = 'block';
+
+  STUDIO_SONGS = [{
+    id: 'song_ai_1',
+    title: (p.tenBai || '') + (p.ca ? ' - ' + p.ca : ''),
+    ytLink: p.linkYoutube || '',
+    noteCao: '',
+    noteThap: '',
+    tone: '0',
+    details: 'Xử lý bài hát: ' + (p.tenBai || ''),
+    guideSections: [
+      { id: 'sec_ai_1', title: 'Giáo án phân tích', badge: 'badge-chorus', text: p.ketQuaAI || '' }
+    ]
+  }];
+  ACTIVE_SONG_GUIDE_INDEX = 0;
+  CURRENT_SONG_SECTIONS = STUDIO_SONGS[0].guideSections;
+  renderStudioSongsList();
+  renderSongGuideTabs();
+  renderSongGuideBuilder();
+
+  STUDIO_TECHS = [{
+    id: 'tech_ai_1',
+    name: 'Luyện thanh bám sát cấu trúc bài hát ' + (p.tenBai || ''),
+    ytLink: '',
+    notes: ''
+  }];
+  renderStudioTechList();
+
+  $('cf_btvn').value        = 'Luyện tập bài hát: ' + (p.tenBai || '');
+  $('cf_nhanXet').value     = '';
+  $('cf_ghiChuNoiBo').value = '';
+  
+  STUDIO_GROUP = [CUR_STUDENT];
+  $('cf_nhanXetLabel').textContent = 'NHẬN XÉT CỦA GIÁO VIÊN (HỌC VIÊN CÓ THỂ XEM)';
+  initScoreCards(STUDIO_GROUP, null);
+  renderPrevSessionPanel(CUR_STUDENT);
+  renderFinalSessionBanner();
+
+  toast('✅ Đã nạp bài hát: ' + (p.tenBai || ''));
+  window.scrollTo(0,0);
+}
+
+function exitClassroomFlow() {
+  if (confirm('Bạn có muốn thoát khỏi buổi học?')) {
+    $('view-classroom-flow').style.display  = 'none';
+    $('view-student-profile').style.display = 'block';
+    $('mainSidebar').style.display          = 'flex';
+    document.body.style.paddingLeft         = '240px';
+  }
+}
+
+function setTimelineStep(el, stepNum) {
+  document.querySelectorAll('.timeline-step').forEach(function(s){ s.classList.remove('active'); });
+  el.classList.add('active');
+}
+
+function setSongSegment(el, segName) {
+  document.querySelectorAll('.seg-btn').forEach(function(b){ b.classList.remove('active'); });
+  el.classList.add('active');
+}
+
+function setSessionScore(score) {
+  STUDIO_SESSION_SCORE = score;
+  document.querySelectorAll('.score-btn').forEach(function(b, idx){
+    b.classList.toggle('active', (idx + 1) === score);
+  });
+}
+
+function runSongAiInStudio() {
+  syncStudioSongsAndTechsFromDom();
+  const curSong = STUDIO_SONGS[ACTIVE_SONG_GUIDE_INDEX] || STUDIO_SONGS[0] || {};
+  let target = curSong.ytLink || curSong.title;
+  if (!target) {
+    target = prompt('Nhập tên bài hát hoặc link YouTube để AI phân tích:', '');
+  }
+  if (!target || !target.trim()) {
+    toast('⚠️ Vui lòng nhập Tên bài hát hoặc link YouTube');
+    return;
+  }
+  toast('✨ AI đang phân tích bài hát ' + (curSong.title ? ('"' + curSong.title + '"') : '') + '...');
+  
+  google.script.run.withSuccessHandler(function(out){
+    if (out) {
+      insertSongSection('Phân tích AI', 'badge-chorus', out);
+      toast('✅ Đã phân tích bài hát xong!');
+    }
+  }).aiAnalyzeSong({
+    linkYoutube: target.trim(),
+    quangGiong: CUR_STUDENT ? CUR_STUDENT.quangGiong : ''
+  });
+}
+
+// Ghi âm (Đã bỏ theo yêu cầu, giữ hàm rỗng tránh lỗi tham chiếu nếu có)
+function toggleAudioRecording() {}
+function stopAudioRecordingIfActive() {}
+
+function finishClassroomSession() {
+  syncStudioSongsAndTechsFromDom();
+
+  const nextBuoi = EDITING_SESSION_ID
+    ? (CUR_STUDENT.buoiHoc ? (CUR_STUDENT.buoiHoc.find(function(x){ return String(x.id) === String(EDITING_SESSION_ID); }) || {}).buoiSo || 1 : 1)
+    : ((CUR_STUDENT.buoiHoc ? CUR_STUDENT.buoiHoc.length : 0) + 1);
+
+  // Lấy thông tin từ danh sách bài hát
+  const primarySong = STUDIO_SONGS[0] || {};
+  const songTitles = STUDIO_SONGS.map(function(s){ return s.title; }).filter(Boolean).join(' / ') || 'Thực hành bài hát';
+  const songYt = primarySong.ytLink || (STUDIO_SONGS.find(function(s){ return s.ytLink; }) || {}).ytLink || '';
+  const noteCao = primarySong.noteCao || '';
+  const noteThap = primarySong.noteThap || '';
+  const songDetails = STUDIO_SONGS.map(function(s){
+    let tInfo = (s.tone && s.tone !== '0') ? (' [Tone: ' + s.tone + ']') : '';
+    return (s.title ? ('🎵 ' + s.title + tInfo + ': ') : '') + (s.details || '');
+  }).filter(Boolean).join('\n');
+
+  // Lấy thông tin từ danh sách kỹ thuật
+  const primaryTech = STUDIO_TECHS[0] || {};
+  const techNames = STUDIO_TECHS.map(function(t){
+    return t.name + (t.notes ? (' (' + t.notes + ')') : '');
+  }).filter(Boolean).join('\n• ');
+  const techYt = primaryTech.ytLink || (STUDIO_TECHS.find(function(t){ return t.ytLink; }) || {}).ytLink || '';
+
+  const data = {
+    id:                 EDITING_SESSION_ID || '',
+    hocVienId:          CUR_STUDENT.id,
+    ngayHoc:            new Date().toISOString().slice(0, 10),
+    buoiSo:             nextBuoi,
+    baiHat:             songTitles,
+    linkYoutube:        songYt,
+    noteCao:            noteCao,
+    noteThap:           noteThap,
+    noiDung:            songDetails,
+    kyThuat:            techNames ? ('• ' + techNames) : '',
+    linkYoutubeKyThuat: techYt,
+    huongDanHatJson:    getSongGuideJson(),
+    baiTapVeNha:        $('cf_btvn').value,
+    nhanXet:            $('cf_nhanXet').value,
+    ghiChuNoiBo:        $('cf_ghiChuNoiBo').value,
+    diemSo:             STUDIO_SESSION_SCORE,
+    songsJson:          JSON.stringify(STUDIO_SONGS),
+    techsJson:          JSON.stringify(STUDIO_TECHS)
+  };
+
+  // Kiểm tra phiếu chấm chưa đủ tiêu chí
+  const incomplete = SCORECARDS.filter(function(c){ return !calcScoreSummary(c.scores).complete; });
+  if (incomplete.length) {
+    const names = incomplete.map(function(c){ return c.hoTen + ' (' + calcScoreSummary(c.scores).count + '/8)'; }).join(', ');
+    if (!confirm('Phiếu chấm chưa đủ 8 tiêu chí: ' + names + '.\nVẫn lưu buổi học?')) return;
+  }
+
+  const afterSave = function(msg){
+    toast(msg);
+    STUDIO_GROUP.forEach(function(m){ delete CACHE_STUDENTS_DETAIL[m.id]; });
+    delete CACHE_STUDENTS_DETAIL[CUR_STUDENT.id];
+
+    // Quay lại profile
+    $('mainSidebar').style.display  = 'flex';
+    document.body.style.paddingLeft = '240px';
+
+    // Nạp lại dữ liệu học viên
+    openStudentProfile(CUR_STUDENT.id);
+    loadStudents();
+  };
+
+  const isGroup = STUDIO_GROUP.length > 1 && !EDITING_SESSION_ID;
+  if (!isGroup) {
+    Object.assign(data, scoreFieldsFor(SCORECARDS[0] || { scores: {} }));
+    google.script.run.withSuccessHandler(function(){
+      afterSave('🎉 Đã lưu Buổi ' + nextBuoi + ' thành công!');
+    }).saveSession(data);
+    return;
+  }
+
+  // Buổi học nhóm: nội dung chung + phiếu chấm / nhận xét riêng từng HV
+  const common = Object.assign({}, data);
+  delete common.id;
+  delete common.hocVienId;
+  delete common.buoiSo;
+  const commonNote = $('cf_nhanXet').value;
+  const members = SCORECARDS.map(function(c){
+    return Object.assign(scoreFieldsFor(c), {
+      hocVienId: c.hocVienId,
+      nhanXet: commonNote + (c.note ? ((commonNote ? '\n' : '') + '— Riêng ' + c.hoTen + ': ' + c.note) : '')
+    });
+  });
+  google.script.run
+    .withSuccessHandler(function(res){
+      if (res && res.success) afterSave('🎉 ' + res.message);
+      else toast('⚠️ ' + (res ? res.message : 'Lỗi lưu buổi học nhóm'));
+    })
+    .withFailureHandler(function(err){ toast('❌ Lỗi: ' + (err ? err.message : 'Không thể kết nối máy chủ')); })
+    .saveGroupSession(common, members);
+}
+
+// ==================== FORM THÊM / CẬP NHẬT HỌC VIÊN ====================
+function openEditModalFromProfile() {
+  if (CUR_STUDENT) openStudentModal(CUR_STUDENT);
+}
+
+// TEST_MODE: 'profile' (từ trang hồ sơ) | 'studio' (nhắc cuối khoá) | 'trial' (học thử)
+let TEST_TARGET = null;
+let TEST_MODE = 'profile';
+
+function getTestTarget() { return TEST_TARGET || CUR_STUDENT; }
+
+function openTestModalFor(student, mode) {
+  if (!student) return;
+  TEST_TARGET = student;
+  TEST_MODE = mode || 'profile';
+  buildCritList();
+  $('v_thap').value = student.noteThap || '';
+  $('v_cao').value  = student.noteCao || '';
+  $('v_note').value = '';
+  $('v_aiOut').textContent = 'Bấm “Phân tích bằng AI” để tạo nhận xét.';
+  const h = document.querySelector('#mTestVoice h2');
+  if (h) h.textContent = '🪄 Đánh giá giọng & Test Rank AI · ' + (student.hoTen || '');
+  calcRank();
+  open_('mTestVoice');
+}
+
+function openTestModalFromProfile() {
+  if (!CUR_STUDENT) return;
+  openTestModalFor(CUR_STUDENT, 'profile');
+}
+
+function rankChangeMessage(oldRank, newRank) {
+  const o = RANK_ORDER.indexOf(String(oldRank || '').toUpperCase());
+  const n = RANK_ORDER.indexOf(String(newRank || '').toUpperCase());
+  if (o === -1 || n === -1) return '✅ Đã lưu đánh giá · Rank ' + newRank;
+  if (n > o) return '🎉 Chúc mừng! Học viên đã lên Rank ' + oldRank + ' → ' + newRank + '!';
+  if (n === o) return '✅ Đã lưu đánh giá · Giữ Rank ' + newRank;
+  return '⚠️ Đã lưu đánh giá · Rank giảm ' + oldRank + ' → ' + newRank;
+}
+
+// Sau khi lưu test: xử lý theo ngữ cảnh mở modal
+function afterVoiceSaved(target, oldRank, newRank) {
+  delete CACHE_STUDENTS_DETAIL[target.id];
+  close_('mTestVoice');
+  if (TEST_MODE === 'studio') {
+    toast(rankChangeMessage(oldRank, newRank));
+    target.rank = newRank;
+    FINAL_BANNER_DISMISSED[target.id] = true;
+    renderFinalSessionBanner();
+    google.script.run.withSuccessHandler(function(full){
+      if (!full) return;
+      CACHE_STUDENTS_DETAIL[full.id] = full;
+      replaceGroupMember(full);
+      if (CUR_STUDENT && String(CUR_STUDENT.id) === String(full.id)) CUR_STUDENT = full;
+    }).getStudent(target.id);
+    loadStudents();
+  } else if (TEST_MODE === 'trial') {
+    toast('✅ Đã lưu Test học thử · Rank gợi ý ' + newRank);
+    loadStudents();
+  } else {
+    toast(rankChangeMessage(oldRank, newRank));
+    openStudentProfile(target.id);
+    loadStudents();
+  }
+}
+
+function recalcSessionCounts() {
+  const khoa = parseInt($('f_soBuoiKhoa').value, 10) || 0;
+  const daHoc = parseInt($('f_soBuoiDaHoc').value, 10) || 0;
+  const conLai = Math.max(0, khoa - daHoc);
+  $('f_soBuoiConLai').value = conLai;
+
+  const alertBox = $('formSessionAlertBox');
+  if (alertBox) {
+    if (khoa > 0 && conLai <= 0) {
+      alertBox.style.display = 'block';
+      alertBox.innerHTML = 
+        '<div style="background:#261210;border:1px solid var(--danger);border-radius:8px;padding:10px 12px;display:flex;align-items:center;justify-content:space-between;gap:8px">' +
+          '<span style="color:#ffb4ab;font-size:12px">🚨 <b>Học viên đã học hết buổi!</b> (Đã học: ' + daHoc + '/' + khoa + ' buổi)</span>' +
+          '<button type="button" class="btn sm gold" style="padding:3px 10px;font-size:11.5px" onclick="quickAddSessionsToModal(12)">+ Nạp 12 buổi</button>' +
+        '</div>';
+    } else if (khoa > 0 && conLai === 1) {
+      alertBox.style.display = 'block';
+      alertBox.innerHTML = 
+        '<div style="background:#261d08;border:1px solid var(--warn);border-radius:8px;padding:10px 12px;display:flex;align-items:center;justify-content:space-between;gap:8px">' +
+          '<span style="color:#ffe082;font-size:12px">⚠️ <b>Cảnh báo:</b> Học viên chỉ còn đúng <b>1 buổi học</b>!</span>' +
+          '<button type="button" class="btn sm gold" style="padding:3px 10px;font-size:11.5px" onclick="quickAddSessionsToModal(12)">+ Nạp 12 buổi</button>' +
+        '</div>';
+    } else {
+      alertBox.style.display = 'none';
+      alertBox.innerHTML = '';
+    }
+  }
+}
+
+function quickAddSessionsToModal(extra) {
+  const cur = parseInt($('f_soBuoiKhoa').value, 10) || 0;
+  $('f_soBuoiKhoa').value = cur + extra;
+  recalcSessionCounts();
+  toast('⚡ Đã cộng thêm ' + extra + ' buổi vào Khoá học');
+}
+
+function autoUpdateQuangGiongFromNotes() {
+  const low = $('f_noteThap') ? $('f_noteThap').value.trim() : '';
+  const high = $('f_noteCao') ? $('f_noteCao').value.trim() : '';
+  if (low && high && $('f_quangGiong')) {
+    $('f_quangGiong').value = low + '–' + high;
+  }
+}
+
+function openStudentModal(editData){
+  if (!hasPerm('students', 'edit')) { toast('⚠️ Bạn không có quyền Thêm/Sửa học viên'); return; }
+  const isEdit = !!editData;
+  $('msTitle').textContent = isEdit ? 'Cập nhật Học Viên' : 'Thêm Học Viên Mới';
+  $('saveStBtn').textContent = isEdit ? 'Cập nhật' : 'Thêm mới';
+
+  const d = editData || {};
+  $('f_id').value              = d.id || '';
+  $('f_avatar').value          = d.avatar || '';
+  $('f_hoTen').value           = d.hoTen || '';
+  $('f_namSinh').value         = d.namSinh || '';
+  $('f_username').value        = d.username || '';
+  $('f_password').value        = d.password || '';
+  $('f_loaiGiong').value       = d.loaiGiong || '';
+  $('f_lop').value             = d.lop || 'TN11';
+  $('f_rank').value            = d.rank || 'A';
+  $('f_ngayBatDau').value      = d.ngayBatDau || '';
+  $('f_soBuoiKhoa').value      = d.soBuoiKhoa || d.soBuoiDeal || 12;
+  $('f_soBuoiDaHoc').value     = d.soBuoiDaHoc || 0;
+  $('f_soBuoiConLai').value    = d.soBuoiConLai != null ? d.soBuoiConLai : (d.soBuoiKhoa ? d.soBuoiKhoa - (d.soBuoiDaHoc||0) : 12);
+  
+  // Nốt & Quãng giọng
+  if ($('f_noteThap'))        $('f_noteThap').value        = d.noteThap || '';
+  if ($('f_noteCao'))         $('f_noteCao').value         = d.noteCao || '';
+  if ($('f_quangGiong'))      $('f_quangGiong').value      = d.quangGiong || (d.noteThap && d.noteCao ? d.noteThap + '–' + d.noteCao : '');
+  if ($('f_noteChuyenGiong')) $('f_noteChuyenGiong').value = d.noteChuyenGiong || '';
+
+  // 5 phân vùng giọng
+  if ($('f_chestVoice'))      $('f_chestVoice').value      = d.chestVoice || '';
+  if ($('f_mixVoice'))        $('f_mixVoice').value        = d.mixVoice || '';
+  if ($('f_falsetto'))        $('f_falsetto').value        = d.falsetto || '';
+  if ($('f_headVoice'))       $('f_headVoice').value       = d.headVoice || '';
+  if ($('f_whistleVoice'))    $('f_whistleVoice').value    = d.whistleVoice || '';
+
+  $('f_mucTieu').value         = d.mucTieu || '';
+  $('f_diemManh').value        = d.diemManh || '';
+  $('f_diemYeu').value         = d.diemYeu || '';
+  $('f_keHoach').value         = d.keHoach || '';
+  $('f_khuyenNghi').value      = d.khuyenNghi || '';
+  $('f_linkDrive').value       = d.linkDrive || '';
+  $('f_giaoVien').value        = d.giaoVien || 'Linh';
+  $('f_tinhTrang').value       = d.tinhTrang || 'Đang học';
+
+  // Dữ liệu học phí & phân chia doanh thu
+  if ($('f_loaiHocVien')) $('f_loaiHocVien').value = d.loaiHocVien || 'NEW';
+  if ($('f_hocPhi')) $('f_hocPhi').value = (d.hocPhi !== undefined && d.hocPhi !== null) ? d.hocPhi : ((d.soBuoiKhoa >= 8 || d.soBuoiDeal >= 8) ? 2500000 : 1750000);
+  if ($('f_daDongHocPhi')) $('f_daDongHocPhi').value = (d.daDongHocPhi === true || String(d.daDongHocPhi).toUpperCase() === 'TRUE' || String(d.daDongHocPhi).toUpperCase() === 'PAID') ? 'true' : 'false';
+  if ($('f_tienMatDaThu')) $('f_tienMatDaThu').value = d.tienMatDaThu || 0;
+
+  updateAvatarPreview(d.avatar || '');
+  recalcSessionCounts();
+
+  if (d.linkDrive && d.linkDrive.indexOf('http') === 0) {
+    $('btnOpenDriveLink').style.display = 'inline-flex';
+    $('btnOpenDriveLink').href = d.linkDrive;
+  } else {
+    $('btnOpenDriveLink').style.display = 'none';
+  }
+
+  if ($('btnDeleteStModal')) {
+    $('btnDeleteStModal').style.display = (isEdit && hasPerm('students', 'delete')) ? 'inline-flex' : 'none';
+  }
+
+  open_('mStudent');
+}
+
+function openStudentModalFast(id){
+  const s = ALL_STUDENTS.find(function(x){ return String(x.id) === String(id); });
+  openStudentModal(s);
+}
+
+function saveStudent(){
+  const hoTen = $('f_hoTen').value.trim();
+  if (!hoTen) { toast('⚠️ Vui lòng nhập họ tên học viên'); return; }
+
+  const btn = $('saveStBtn');
+  btn.disabled = true;
+  btn.innerHTML = '<span class="spin"></span> Đang lưu...';
+
+  const noteThap = $('f_noteThap') ? $('f_noteThap').value.trim() : '';
+  const noteCao = $('f_noteCao') ? $('f_noteCao').value.trim() : '';
+  let qGiong = $('f_quangGiong') ? $('f_quangGiong').value.trim() : '';
+  if (!qGiong && noteThap && noteCao) qGiong = noteThap + '–' + noteCao;
+
+  const data = {
+    id:              $('f_id').value || '',
+    avatar:          $('f_avatar').value || '',
+    hoTen:           hoTen,
+    namSinh:         $('f_namSinh').value,
+    username:        $('f_username').value,
+    password:        $('f_password').value,
+    loaiGiong:       $('f_loaiGiong').value,
+    lop:             $('f_lop').value,
+    rank:            $('f_rank').value,
+    ngayBatDau:      $('f_ngayBatDau').value,
+    soBuoiKhoa:      $('f_soBuoiKhoa').value,
+    soBuoiDeal:      $('f_soBuoiKhoa').value,
+    soBuoiDaHoc:     $('f_soBuoiDaHoc').value,
+    soBuoiConLai:    $('f_soBuoiConLai').value,
+    quangGiong:      qGiong,
+    noteThap:        noteThap,
+    noteCao:         noteCao,
+    noteChuyenGiong: $('f_noteChuyenGiong') ? $('f_noteChuyenGiong').value.trim() : '',
+    chestVoice:      $('f_chestVoice') ? $('f_chestVoice').value.trim() : '',
+    mixVoice:        $('f_mixVoice') ? $('f_mixVoice').value.trim() : '',
+    falsetto:        $('f_falsetto') ? $('f_falsetto').value.trim() : '',
+    headVoice:       $('f_headVoice') ? $('f_headVoice').value.trim() : '',
+    whistleVoice:    $('f_whistleVoice') ? $('f_whistleVoice').value.trim() : '',
+    mucTieu:         $('f_mucTieu').value,
+    diemManh:        $('f_diemManh').value,
+    diemYeu:         $('f_diemYeu').value,
+    keHoach:         $('f_keHoach').value,
+    khuyenNghi:      $('f_khuyenNghi').value,
+    linkDrive:       $('f_linkDrive').value,
+    giaoVien:        $('f_giaoVien').value,
+    tinhTrang:       $('f_tinhTrang').value,
+    loaiHocVien:     $('f_loaiHocVien') ? $('f_loaiHocVien').value : 'NEW',
+    hocPhi:          $('f_hocPhi') ? (parseFloat($('f_hocPhi').value) || 0) : 0,
+    daDongHocPhi:    $('f_daDongHocPhi') ? ($('f_daDongHocPhi').value === 'true') : true,
+    tienMatDaThu:    $('f_tienMatDaThu') ? (parseFloat($('f_tienMatDaThu').value) || 0) : 0
+  };
+  // Học phí chỉ Admin được ghi (GV không gửi để tránh ghi đè)
+  if (!isAdmin()) {
+    delete data.loaiHocVien; delete data.hocPhi; delete data.daDongHocPhi; delete data.tienMatDaThu;
+  }
+
+  google.script.run.withSuccessHandler(function(id){
+    btn.disabled = false;
+    btn.textContent = 'Cập nhật';
+    close_('mStudent');
+    toast('✅ Đã lưu học viên thành công');
+
+    delete CACHE_STUDENTS_DETAIL[id];
+    loadStudents();
+
+    if (CUR_STUDENT && String(CUR_STUDENT.id) === String(id)) {
+      openStudentProfile(id);
+    }
+  }).saveStudent(data);
+}
+
+// ==================== GIA HẠN KHOÁ HỌC (QUICK RENEW MODAL) ====================
+function openRenewModal(id) {
+  if (!hasPerm('students', 'edit')) { toast('⚠️ Bạn không có quyền Gia hạn khoá học'); return; }
+  const s = (CUR_STUDENT && String(CUR_STUDENT.id) === String(id))
+    ? CUR_STUDENT
+    : ALL_STUDENTS.find(function(x){ return String(x.id) === String(id); });
+  
+  if (!s) { toast('⚠️ Không tìm thấy học viên'); return; }
+
+  $('rn_studentId').value = s.id;
+  $('rn_studentName').textContent = s.hoTen;
+  $('rn_studentMeta').textContent = 'Lớp ' + (s.lop || '—') + ' · Rank ' + (s.rank || 'A') + ' · GV ' + (s.giaoVien || 'Linh');
+
+  const total = parseInt(s.soBuoiKhoa || s.soBuoiDeal, 10) || 0;
+  const done  = parseInt(s.soBuoiDaHoc, 10) || 0;
+  const left  = s.soBuoiConLai != null ? s.soBuoiConLai : Math.max(0, total - done);
+
+  $('rn_curTotal').textContent = total;
+  $('rn_curDone').textContent  = done;
+  $('rn_curLeft').textContent  = left;
+
+  // Đặt preset mặc định +12 buổi
+  selectRenewPreset(12);
+  open_('mQuickRenew');
+}
+
+function selectRenewPreset(extra) {
+  document.querySelectorAll('.renew-preset-btn').forEach(function(btn){
+    if (btn.textContent.indexOf('+' + extra + ' buổi') !== -1) {
+      btn.classList.add('active');
+    } else {
+      btn.classList.remove('active');
+    }
+  });
+  $('rn_extraSessions').value = extra;
+  calcRenewPreview();
+}
+
+function calcRenewPreview() {
+  const extra = parseInt($('rn_extraSessions').value, 10) || 0;
+  const curTotal = parseInt($('rn_curTotal').textContent, 10) || 0;
+  const curDone = parseInt($('rn_curDone').textContent, 10) || 0;
+  const newTotal = curTotal + extra;
+  const newLeft = Math.max(0, newTotal - curDone);
+  $('rn_newTotal').value = newTotal;
+  $('rn_newLeft').textContent = newLeft + ' buổi';
+}
+
+function confirmQuickRenew() {
+  const id = $('rn_studentId').value;
+  const extra = parseInt($('rn_extraSessions').value, 10);
+  if (!extra || extra <= 0) { toast('⚠️ Vui lòng nhập số buổi hợp lệ (> 0)'); return; }
+
+  const btn = $('btnConfirmRenew');
+  btn.disabled = true;
+  btn.innerHTML = '<span class="spin"></span> Đang gia hạn...';
+
+  google.script.run.withSuccessHandler(function(res){
+    btn.disabled = false;
+    btn.innerHTML = '⚡ Xác nhận Gia hạn ngay';
+    close_('mQuickRenew');
+
+    if (res && res.success) {
+      toast('🎉 ' + res.message);
+      
+      // Xoá cache & nạp lại
+      delete CACHE_STUDENTS_DETAIL[id];
+      
+      // Cập nhật CUR_STUDENT nếu đang mở
+      if (CUR_STUDENT && String(CUR_STUDENT.id) === String(id)) {
+        CUR_STUDENT.soBuoiKhoa = res.soBuoiKhoa;
+        CUR_STUDENT.soBuoiDeal = res.soBuoiKhoa;
+        CUR_STUDENT.soBuoiConLai = res.soBuoiConLai;
+        displayStudentProfileView(CUR_STUDENT);
+      }
+      
+      loadStudents();
+    } else {
+      toast('⚠️ ' + (res ? res.message : 'Có lỗi khi gia hạn'));
+    }
+  }).withFailureHandler(function(err){
+    btn.disabled = false;
+    btn.innerHTML = '⚡ Xác nhận Gia hạn ngay';
+    toast('❌ Lỗi: ' + (err ? err.message : 'Không thể kết nối máy chủ'));
+  }).renewStudentSessions(id, extra);
+}
+
+function triggerCreateFolderFromModal(){
+  const hoTen = $('f_hoTen').value.trim();
+  if (!hoTen) { toast('⚠️ Nhập Họ tên trước'); return; }
+  const btn = $('btnCreateDriveInModal');
+  btn.disabled = true;
+  btn.innerHTML = '<span class="spin"></span> Đang tạo folder...';
+
+  google.script.run.withSuccessHandler(function(res){
+    btn.disabled = false;
+    btn.textContent = '📁 Tạo folder Drive tự động';
+    if (res && res.success) {
+      $('f_linkDrive').value = res.folderUrl;
+      $('btnOpenDriveLink').style.display = 'inline-flex';
+      $('btnOpenDriveLink').href = res.folderUrl;
+      toast('✅ Đã tạo: ' + res.folderName);
+      window.open(res.folderUrl, '_blank');
+    } else {
+      toast('⚠️ ' + (res.message || 'Lỗi tạo folder'));
+    }
+  }).createStudentDriveFolder({
+    id: $('f_id').value,
+    hoTen: hoTen,
+    rank: $('f_rank').value || 'A',
+    lop: $('f_lop').value || 'TN11',
+    ngayBatDau: $('f_ngayBatDau').value
+  });
+}
+
+function pullTestRoadmap(){
+  if (CUR_STUDENT && CUR_STUDENT.danhGiaGiong && CUR_STUDENT.danhGiaGiong.length > 0) {
+    const lastTest = CUR_STUDENT.danhGiaGiong[CUR_STUDENT.danhGiaGiong.length - 1];
+    if (lastTest.ketQuaAI) {
+      $('f_khuyenNghi').value = lastTest.ketQuaAI;
+      toast('✅ Đã lấy kết quả từ lần Test gần nhất!');
+    }
+  } else {
+    toast('Chưa có dữ liệu đánh giá giọng');
+  }
+}
+
+// ==================== TEST RANK & ĐÁNH GIÁ GIỌNG AI ====================
+const CRITERIA = [
+  { g:'CAO ĐỘ (Pitch)', items:[['P1','Nghe & lặp đúng 1 nốt đơn'],['P2','Hát đúng scale đi lên'],['P3','Hát đúng scale đi xuống'],['P4','Pitch ổn định trong câu (>80%)'],['P5','Giữ đúng cao độ cuối câu']] },
+  { g:'NHỊP (Rhythm)', items:[['R1','Vỗ tay đúng metronome'],['R2','Vào nhạc không sớm/trễ']] },
+  { g:'HƠI THỞ (Breath)', items:[['B1','Lấy hơi cơ hoành, không nhấc vai'],['B2','Không hụt hơi giữa câu'],['B3','Sustain âm > 8 giây']] },
+  { g:'CHẤT GIỌNG (Tone)', items:[['T1','Âm không bí/nghẹt mũi'],['T2','Không gằn cổ, không căng hàm'],['T3','Có độ vang tự nhiên']] },
+  { g:'QUÃNG (Range)', items:[['RG1','Không strain vùng cao']] },
+  { g:'PHÁT ÂM', items:[['A1','Phát âm rõ, không nuốt chữ']] },
+  { g:'CẢM XÚC & TỰ TIN', items:[['M1','Thể hiện cảm xúc cơ bản'],['M2','Tự nhận biết khi hát sai'],['C1','Không run quá mức']] }
+];
+const critState = {};
+
+function buildCritList(){
+  Object.keys(critState).forEach(function(k){ delete critState[k]; });
+  $('critList').innerHTML = CRITERIA.map(function(grp){
+    return '<div class="crit-grp"><div class="gh">' + grp.g + '</div>' + grp.items.map(function(it){
+      critState[it[0]] = 0;
+      return '<div class="crit"><div class="cx">[' + it[0] + '] ' + it[1] + '</div><div class="sc">' +
+        '<div class="chip on" onclick="setCrit(this,\'' + it[0] + '\',0)">0</div>' +
+        '<div class="chip" onclick="setCrit(this,\'' + it[0] + '\',1)">1</div></div></div>';
+    }).join('') + '</div>';
+  }).join('');
+}
+
+function setCrit(el, code, val){
+  critState[code] = val;
+  const row = el.parentElement;
+  row.querySelectorAll('.chip').forEach(function(c){ c.classList.remove('on'); });
+  el.classList.add('on');
+  calcRank();
+}
+
+function calcRank(){
+  let t = 0;
+  Object.keys(critState).forEach(function(k){ t += critState[k]; });
+  let r = 'A';
+  if (t >= 15) r = 'D';
+  else if (t >= 12) r = 'C';
+  else if (t >= 7) r = 'B';
+  $('v_tong').textContent = t;
+  $('v_rank').textContent = r;
+  return { t: t, r: r };
+}
+
+function critText(){
+  return CRITERIA.map(function(grp){
+    return grp.items.map(function(it){
+      return '[' + it[0] + '] ' + it[1] + ': ' + (critState[it[0]] ? 'Đạt' : 'Chưa đạt');
+    }).join('\n');
+  }).join('\n');
+}
+
+function runVoiceAI(){
+  if (!hasPerm('voice', 'edit')) { toast('⚠️ Bạn không có quyền phân tích'); return; }
+  const tg = getTestTarget();
+  if (!tg) return;
+  const rk = calcRank();
+  const btn = $('aiVoiceBtn');
+  btn.disabled = true;
+  btn.innerHTML = '<span class="spin"></span> AI đang phân tích…';
+
+  google.script.run.withSuccessHandler(function(out){
+    $('v_aiOut').innerHTML = mdBold(out);
+    btn.disabled = false;
+    btn.textContent = '✨ Phân tích bằng AI';
+  }).aiAnalyzeVoice({
+    hoTen: tg.hoTen,
+    loaiGiong: tg.loaiGiong,
+    quangGiong: tg.quangGiong,
+    noteThap: $('v_thap').value,
+    noteCao: $('v_cao').value,
+    tongDiem: rk.t,
+    rankGoiY: rk.r,
+    mucTieu: tg.mucTieu,
+    chiTietText: critText() + '\nGhi chú GV: ' + $('v_note').value
+  });
+}
+
+function applyAiVoiceToStudent(){
+  const tg = getTestTarget();
+  if (!tg) return;
+  const content = $('v_aiOut').textContent;
+  if (!content || content.indexOf('Bấm') === 0) { toast('⚠️ Chưa có kết quả AI'); return; }
+  const rk = calcRank();
+  const oldRank = tg.rank;
+  const p = {
+    id: tg.id,
+    rank: rk.r,
+    noteThap: $('v_thap').value,
+    noteCao: $('v_cao').value,
+    quangGiong: $('v_thap').value && $('v_cao').value ? ($('v_thap').value + '–' + $('v_cao').value) : tg.quangGiong,
+    khuyenNghi: content
+  };
+  google.script.run.withSuccessHandler(function(){
+    afterVoiceSaved(tg, oldRank, rk.r);
+  }).saveStudent(p);
+}
+
+function saveVoice(){
+  if (!hasPerm('voice', 'edit')) { toast('⚠️ Bạn không có quyền lưu đánh giá'); return; }
+  const tg = getTestTarget();
+  if (!tg) return;
+  const rk = calcRank();
+  const oldRank = tg.rank;
+  const d = {
+    hocVienId:    tg.id,
+    ngayDanhGia:  new Date().toISOString().slice(0, 10),
+    loaiPhieu:    TEST_MODE === 'trial' ? 'Test học thử' : (TEST_MODE === 'studio' ? 'Test cuối khoá' : 'Test nền tảng'),
+    noteThap:     $('v_thap').value,
+    noteCao:      $('v_cao').value,
+    tongDiem:     rk.t,
+    rankGoiY:     rk.r,
+    chiTiet:      JSON.stringify(critState),
+    ketQuaAI:     $('v_aiOut').textContent,
+    khuyenNghi:   $('v_aiOut').textContent.indexOf('Bấm') === 0 ? '' : $('v_aiOut').textContent
+  };
+  google.script.run.withSuccessHandler(function(){
+    afterVoiceSaved(tg, oldRank, rk.r);
+  }).saveVoiceAssessment(d);
+}
+
+// ==================== CẤU HÌNH & MA TRẬN PHÂN QUYỀN ====================
+function loadSettingsView(){
+  google.script.run.withSuccessHandler(function(cfg){
+    $('cfg_geminiKey').value   = cfg.geminiApiKey || '';
+    $('cfg_geminiModel').value = cfg.geminiModel || 'gemini-2.0-flash';
+    $('cfg_sharedDrive').value = cfg.sharedDriveLink || '';
+    if (cfg.sharedDriveLink) $('btnOpenSharedDrive').href = cfg.sharedDriveLink;
+    $('cfg_scheduleSheet').value = cfg.scheduleSheetLink || '';
+    $('cfg_groupClasses').value  = cfg.groupClasses || 'TN12';
+    APP_CONFIG = cfg;
+  }).getConfig();
+
+  loadUsers();
+}
+
+function toggleKeyVisibility(){
+  const inp = $('cfg_geminiKey');
+  inp.type = inp.type === 'password' ? 'text' : 'password';
+}
+
+function saveSystemConfig(){
+  const data = {
+    geminiApiKey:    $('cfg_geminiKey').value.trim(),
+    geminiModel:     $('cfg_geminiModel').value,
+    sharedDriveLink: $('cfg_sharedDrive').value.trim(),
+    scheduleSheetLink: $('cfg_scheduleSheet').value.trim(),
+    groupClasses:    $('cfg_groupClasses').value.trim()
+  };
+  APP_CONFIG.groupClasses = data.groupClasses;
+  SCHEDULE_DATA = null;
+  google.script.run.withSuccessHandler(function(res){
+    toast('✅ ' + (res.message || 'Đã lưu cấu hình'));
+    if (data.sharedDriveLink) $('btnOpenSharedDrive').href = data.sharedDriveLink;
+  }).saveConfig(data);
+}
+
+function testGeminiConnection(){
+  toast('⏳ Đang kiểm tra API Gemini...');
+  google.script.run.withSuccessHandler(function(res){
+    if (res && res.indexOf('⚠️') !== 0) {
+      toast('✅ Kết nối Gemini AI thành công!');
+      alert('Kết quả từ Gemini:\n\n' + res);
+    } else { alert(res); }
+  }).aiAnalyzeVoice({ hoTen: 'Học viên Test', tongDiem: 10, rankGoiY: 'B' });
+}
+
+function loadUsers(){
+  google.script.run.withSuccessHandler(function(list){
+    ALL_USERS = list || [];
+    renderUserMatrix();
+    renderUserSelect();
+  }).getUsers();
+}
+
+function renderUserSelect(){
+  const sel = $('curUserSelect');
+  sel.innerHTML = ALL_USERS.map(function(u){
+    return '<option value="' + u.id + '">' + esc(u.hoTen) + ' (' + (u.role === 'admin' ? 'Admin' : 'GV') + ')</option>';
+  }).join('');
+  if (!CURRENT_USER && ALL_USERS.length) {
+    CURRENT_USER = ALL_USERS[0];
+    $('curUserRoleBadge').textContent = (CURRENT_USER.role === 'admin' ? 'Admin' : 'Giảng viên') + ' · ' + CURRENT_USER.hoTen;
+    updateUiByPermissions();
+  }
+}
+
+function renderUserMatrix(){
+  const body = $('userMatrixBody');
+  if (!ALL_USERS.length) { body.innerHTML = '<tr><td colspan="17" class="empty">Chưa có người dùng nào.</td></tr>'; return; }
+  body.innerHTML = ALL_USERS.map(function(u){
+    const p = u.permissions || {};
+    const chk = function(mod, act){
+      const val = p[mod] && p[mod][act];
+      return '<input type="checkbox" ' + (val ? 'checked' : '') + ' onchange="updateQuickPermission(\'' + u.id + '\',\'' + mod + '\',\'' + act + '\',this.checked)">';
+    };
+    const roleBadge = u.role === 'admin'
+      ? '<span class="badge" style="background:#3a2f1a;color:var(--gold)">Admin</span>'
+      : '<span class="badge" style="background:#16352c;color:var(--teal)">GV</span>';
+
+    return '<tr>' +
+      '<td><input type="checkbox" class="user-row-chk" value="' + u.id + '" onchange="updateSelectedUserCount()"></td>' +
+      '<td class="uname"><b>' + esc(u.hoTen) + '</b><br><small style="color:var(--mut)">@' + esc(u.username) + '</small></td>' +
+      '<td>' + roleBadge + '</td>' +
+      '<td>' + chk('students','view') + '</td><td>' + chk('students','edit') + '</td><td>' + chk('students','delete') + '</td>' +
+      '<td>' + chk('sessions','view') + '</td><td>' + chk('sessions','edit') + '</td><td>' + chk('sessions','delete') + '</td>' +
+      '<td>' + chk('voice','view') + '</td><td>' + chk('voice','edit') + '</td><td>' + chk('voice','delete') + '</td>' +
+      '<td>' + chk('songs','view') + '</td><td>' + chk('songs','edit') + '</td><td>' + chk('songs','delete') + '</td>' +
+      '<td>' + chk('settings','view') + '</td><td>' + chk('settings','edit') + '</td>' +
+      '<td><div class="row-flex" style="justify-content:center">' +
+        '<button class="btn ghost sm" style="padding:3px 7px" onclick="openUserModal(\'' + u.id + '\')">✏</button>' +
+        '<button class="btn danger sm" style="padding:3px 7px" onclick="deleteSingleUser(\'' + u.id + '\')">✕</button>' +
+      '</div></td>' +
+      '</tr>';
+  }).join('');
+}
+
+function updateQuickPermission(userId, mod, act, checked){
+  const u = ALL_USERS.find(function(x){ return String(x.id) === String(userId); });
+  if (!u) return;
+  if (!u.permissions) u.permissions = {};
+  if (!u.permissions[mod]) u.permissions[mod] = {};
+  u.permissions[mod][act] = checked;
+  google.script.run.withSuccessHandler(function(){ toast('Đã cập nhật quyền'); }).saveUser(u);
+}
+
+function toggleSelectAllUsers(master){
+  document.querySelectorAll('.user-row-chk').forEach(function(c){ c.checked = master.checked; });
+  updateSelectedUserCount();
+}
+
+function updateSelectedUserCount(){
+  const sel = document.querySelectorAll('.user-row-chk:checked');
+  $('selCount').textContent = sel.length;
+  $('btnDeleteSelectedUsers').style.display = sel.length > 0 ? 'inline-flex' : 'none';
+}
+
+function openUserModal(id){
+  const u = id ? ALL_USERS.find(function(x){ return String(x.id) === String(id); }) : null;
+  $('muTitle').textContent = u ? 'Sửa Người Dùng' : 'Thêm Người Dùng Mới';
+  $('u_id').value       = u ? u.id : '';
+  $('u_hoTen').value    = u ? u.hoTen : '';
+  $('u_username').value = u ? u.username : '';
+  $('u_password').value = '';
+  $('u_role').value     = u ? u.role : 'gv';
+  $('u_email').value    = u ? u.email : '';
+
+  const p = (u && u.permissions) ? u.permissions : {};
+  $('p_st_v').checked = p.students ? !!p.students.view : true;
+  $('p_st_e').checked = p.students ? !!p.students.edit : true;
+  $('p_st_d').checked = p.students ? !!p.students.delete : (u && u.role==='admin');
+  $('p_se_v').checked = p.sessions ? !!p.sessions.view : true;
+  $('p_se_e').checked = p.sessions ? !!p.sessions.edit : true;
+  $('p_se_d').checked = p.sessions ? !!p.sessions.delete : true;
+  $('p_vo_v').checked = p.voice ? !!p.voice.view : true;
+  $('p_vo_e').checked = p.voice ? !!p.voice.edit : true;
+  $('p_vo_d').checked = p.voice ? !!p.voice.delete : true;
+  $('p_so_v').checked = p.songs ? !!p.songs.view : true;
+  $('p_so_e').checked = p.songs ? !!p.songs.edit : true;
+  $('p_so_d').checked = p.songs ? !!p.songs.delete : true;
+  $('p_cf_v').checked = p.settings ? !!p.settings.view : (u && u.role==='admin');
+  $('p_cf_e').checked = p.settings ? !!p.settings.edit : (u && u.role==='admin');
+  $('p_cf_d').checked = p.settings ? !!p.settings.delete : (u && u.role==='admin');
+
+  open_('mUser');
+}
+
+function presetRolePermissions(role){
+  const isAdmin = role === 'admin';
+  document.querySelectorAll('#mUser input[type="checkbox"]').forEach(function(c){ c.checked = isAdmin; });
+  if (!isAdmin) {
+    $('p_st_v').checked = true; $('p_st_e').checked = true;
+    $('p_se_v').checked = true; $('p_se_e').checked = true; $('p_se_d').checked = true;
+    $('p_vo_v').checked = true; $('p_vo_e').checked = true; $('p_vo_d').checked = true;
+    $('p_so_v').checked = true; $('p_so_e').checked = true; $('p_so_d').checked = true;
+  }
+}
+
+function saveUserFromModal(){
+  const hoTen = $('u_hoTen').value.trim();
+  const username = $('u_username').value.trim();
+  if (!hoTen || !username) { toast('⚠️ Vui lòng nhập họ tên và username'); return; }
+
+  const perms = {
+    students: { view: $('p_st_v').checked, edit: $('p_st_e').checked, delete: $('p_st_d').checked },
+    sessions: { view: $('p_se_v').checked, edit: $('p_se_e').checked, delete: $('p_se_d').checked },
+    voice:    { view: $('p_vo_v').checked, edit: $('p_vo_e').checked, delete: $('p_vo_d').checked },
+    songs:    { view: $('p_so_v').checked, edit: $('p_so_e').checked, delete: $('p_so_d').checked },
+    settings: { view: $('p_cf_v').checked, edit: $('p_cf_e').checked, delete: $('p_cf_d').checked }
+  };
+
+  const data = {
+    id:          $('u_id').value,
+    hoTen:       hoTen,
+    username:    username,
+    password:    $('u_password').value,
+    role:        $('u_role').value,
+    email:       $('u_email').value,
+    permissions: perms
+  };
+
+  google.script.run.withSuccessHandler(function(res){
+    close_('mUser');
+    toast('✅ ' + (res.message || 'Đã lưu người dùng'));
+    loadUsers();
+  }).saveUser(data);
+}
+
+function deleteSingleUser(id){
+  if (!confirm('Bạn có chắc muốn xoá người dùng này?')) return;
+  google.script.run.withSuccessHandler(function(){ toast('✅ Đã xoá'); loadUsers(); }).deleteUsers([id]);
+}
+
+function deleteSelectedUsers(){
+  const sel = Array.from(document.querySelectorAll('.user-row-chk:checked')).map(function(c){ return c.value; });
+  if (!sel.length) return;
+  if (!confirm('Bạn có chắc muốn xoá ' + sel.length + ' người dùng đã chọn?')) return;
+  google.script.run.withSuccessHandler(function(){
+    toast('✅ Đã xoá các người dùng đã chọn');
+    loadUsers();
+    $('chkAllUsers').checked = false;
+    updateSelectedUserCount();
+  }).deleteUsers(sel);
+}
+
+// ==================== QUẢN LÝ HỌC PHÍ, ĐIỂM DANH & QUYẾT TOÁN DOANH THU ====================
+let CURRENT_TUITION_DATA = null;
+let CURRENT_TUITION_SUBTAB = 'overview';
+
+function fmtMoney(n) {
+  if (n == null || isNaN(n)) return '0 ₫';
+  return Number(n).toLocaleString('vi-VN') + ' ₫';
+}
+
+function switchTuitionSubtab(tab) {
+  CURRENT_TUITION_SUBTAB = tab;
+  if ($('btnSubtabOverview')) $('btnSubtabOverview').classList.toggle('active', tab === 'overview');
+  if ($('btnSubtabAttendance')) $('btnSubtabAttendance').classList.toggle('active', tab === 'attendance');
+  if ($('btnSubtabSettlement')) $('btnSubtabSettlement').classList.toggle('active', tab === 'settlement');
+
+  if ($('tuitionPaneOverview')) $('tuitionPaneOverview').style.display   = tab === 'overview' ? 'block' : 'none';
+  if ($('tuitionPaneAttendance')) $('tuitionPaneAttendance').style.display = tab === 'attendance' ? 'block' : 'none';
+  if ($('tuitionPaneSettlement')) $('tuitionPaneSettlement').style.display = tab === 'settlement' ? 'block' : 'none';
+
+  if (tab === 'attendance') {
+    renderAttendanceSheetGrid();
+  }
+}
+
+function loadTuitionSettlement(month, year) {
+  const m = month || ($('tuitionMonthSelect') ? $('tuitionMonthSelect').value : (new Date().getMonth() + 1));
+  const y = year || ($('tuitionYearSelect') ? $('tuitionYearSelect').value : new Date().getFullYear());
+
+  if ($('tuitionMonthSelect')) $('tuitionMonthSelect').value = m;
+  if ($('tuitionYearSelect')) $('tuitionYearSelect').value = y;
+
+  toast('⏳ Đang tải dữ liệu học phí & quyết toán...');
+
+  google.script.run
+    .withSuccessHandler(function(data){
+      if (!data) { toast('⚠️ Không nhận được dữ liệu học phí'); return; }
+      CURRENT_TUITION_DATA = data;
+      renderTuitionOverview(data);
+      renderAttendanceSheetGrid();
+      renderSettlementTable(data);
+      renderVietQRCard(data);
+      toast('✅ Đã nạp dữ liệu học phí tháng ' + m + '/' + y);
+    })
+    .withFailureHandler(function(err){
+      toast('❌ Lỗi tải dữ liệu: ' + (err ? err.message : 'Không xác định'));
+    })
+    .getTuitionSettlementData(m, y);
+}
+
+function renderTuitionOverview(data) {
+  if (!data || !data.summary) return;
+  const s = data.summary;
+
+  if ($('t_stat_totalTuition')) $('t_stat_totalTuition').textContent = fmtMoney(s.totalTuition);
+  if ($('t_stat_centerRevenue')) $('t_stat_centerRevenue').textContent = fmtMoney(s.totalCenter);
+  if ($('t_stat_linhRevenue')) $('t_stat_linhRevenue').textContent = fmtMoney(s.totalLinh);
+  if ($('t_stat_quanRevenue')) $('t_stat_quanRevenue').textContent = fmtMoney(s.totalQuan);
+
+  if ($('unpaidCountBadge')) $('unpaidCountBadge').textContent = s.unpaidCount;
+  if ($('renewCountBadge')) $('renewCountBadge').textContent = s.renewAlertCount;
+
+  // Render bảng nợ học phí (Cần thu tiền)
+  const unpaidBody = $('unpaidListBody');
+  if (unpaidBody) {
+    if (!data.unpaidList || !data.unpaidList.length) {
+      unpaidBody.innerHTML = '<tr><td colspan="5" class="empty" style="padding:16px;color:var(--teal)">🎉 Tuyệt vời! Tất cả học viên đã hoàn thành đóng học phí.</td></tr>';
+    } else {
+      unpaidBody.innerHTML = data.unpaidList.map(function(st){
+        return '<tr>' +
+          '<td><b>' + esc(st.hoTen) + '</b><br><small style="color:var(--mut)">Rank ' + esc(st.rank) + '</small></td>' +
+          '<td>Lớp <b>' + esc(st.lop) + '</b><br><small style="color:var(--mut)">GV ' + esc(st.giaoVien) + '</small></td>' +
+          '<td><b style="color:var(--danger)">' + fmtMoney(st.tuitionFee) + '</b></td>' +
+          '<td><button class="btn ghost sm" style="padding:2px 8px;font-size:11.5px" onclick="promptUpdateCashCollected(\'' + st.id + '\',' + st.cashCollected + ')">💵 ' + fmtMoney(st.cashCollected) + '</button></td>' +
+          '<td style="text-align:right">' +
+            '<button class="btn sm gold" style="padding:4px 10px;font-size:11.5px" onclick="quickTogglePayment(\'' + st.id + '\',false)">✓ Đã thu đủ</button>' +
+          '</td>' +
+          '</tr>';
+      }).join('');
+    }
+  }
+
+  // Render bảng kế hoạch thu tháng mới
+  const renewBody = $('renewPlanListBody');
+  if (renewBody) {
+    if (!data.renewPlanList || !data.renewPlanList.length) {
+      renewBody.innerHTML = '<tr><td colspan="5" class="empty" style="padding:16px">Chưa có học viên nào sắp hết buổi trong tháng này.</td></tr>';
+    } else {
+      renewBody.innerHTML = data.renewPlanList.map(function(st){
+        const leftBadge = st.remainingSessions === 0 
+          ? '<span class="badge-danger-pulse">🚨 Hết buổi</span>'
+          : '<span class="badge-warning-pulse">⚠️ Còn 1 buổi</span>';
+
+        return '<tr>' +
+          '<td><b>' + esc(st.hoTen) + '</b><br><small style="color:var(--mut)">Rank ' + esc(st.rank) + ' · ' + (st.studentType === 'NEW' ? 'HV Mới' : 'HV Cũ') + '</small></td>' +
+          '<td>Lớp <b>' + esc(st.lop) + '</b><br><small style="color:var(--mut)">GV ' + esc(st.giaoVien) + '</small></td>' +
+          '<td><b>' + st.attendedSessionsCount + '/' + st.totalDealSessions + '</b> buổi</td>' +
+          '<td>' + leftBadge + '</td>' +
+          '<td style="text-align:right">' +
+            '<button class="btn-renew" style="padding:3px 10px;font-size:11px" onclick="openRenewModal(\'' + st.id + '\')">⚡ Gia hạn</button>' +
+          '</td>' +
+          '</tr>';
+      }).join('');
+    }
+  }
+}
+
+function renderAttendanceSheetGrid() {
+  if (!CURRENT_TUITION_DATA || !CURRENT_TUITION_DATA.students) return;
+
+  const q = ($('attendanceSearch') ? $('attendanceSearch').value : '').toLowerCase().trim();
+  const gvFilter = $('attendanceTeacherFilter') ? $('attendanceTeacherFilter').value : '';
+  const payFilter = $('attendancePaymentFilter') ? $('attendancePaymentFilter').value : '';
+
+  const list = CURRENT_TUITION_DATA.students.filter(function(st){
+    const matchQ = (st.hoTen + ' ' + st.lop + ' ' + st.giaoVien).toLowerCase().indexOf(q) >= 0;
+    const matchGv = !gvFilter || st.giaoVien.toLowerCase().indexOf(gvFilter.toLowerCase()) >= 0;
+    const matchPay = !payFilter || (payFilter === 'PAID' ? st.isPaid : !st.isPaid);
+    return matchQ && matchGv && matchPay;
+  });
+
+  const body = $('attendanceSheetBody');
+  if (!body) return;
+
+  if (!list.length) {
+    body.innerHTML = '<tr><td colspan="20" class="empty">Không tìm thấy học viên phù hợp với bộ lọc.</td></tr>';
+    return;
+  }
+
+  body.innerHTML = list.map(function(st, idx){
+    // Trạng thái badge
+    let badgeHtml = '';
+    if (!st.isPaid) {
+      badgeHtml = '<span class="badge st-nghi" style="cursor:pointer" onclick="quickTogglePayment(\'' + st.id + '\',false)" title="Bấm để chuyển sang Đã đóng">🚨 Cần thu</span>';
+    } else if (st.remainingSessions <= 1) {
+      badgeHtml = '<span class="badge st-done" style="cursor:pointer" onclick="openRenewModal(\'' + st.id + '\')" title="Bấm để gia hạn">+ Gia hạn</span>';
+    } else {
+      badgeHtml = '<span class="badge st-hoc">✓ Đang học</span>';
+    }
+
+    // 12 ô điểm danh
+    let sessionCells = '';
+    for (let b = 1; b <= 12; b++) {
+      if (b > st.totalDealSessions) {
+        sessionCells += '<td class="col-sess"><div class="sess-box disabled" title="Khóa học chỉ có ' + st.totalDealSessions + ' buổi">—</div></td>';
+      } else {
+        const isChecked = b <= st.attendedSessionsCount;
+        const clickFn = 'quickCheckInSession(\'' + st.id + '\', ' + b + ', ' + st.attendedSessionsCount + ')';
+        sessionCells += '<td class="col-sess sess-cell" onclick="' + clickFn + '">' +
+          '<div class="sess-box ' + (isChecked ? 'checked' : '') + '" title="Buổi ' + b + (isChecked ? ' (Đã điểm danh - Bấm để huỷ)' : ' (Chưa học - Bấm để điểm danh)') + '">' +
+            (isChecked ? '✓' : b) +
+          '</div>' +
+        '</td>';
+      }
+    }
+
+    const driveBtn = (st.linkDrive && st.linkDrive.indexOf('http') === 0)
+      ? '<a href="' + esc(st.linkDrive) + '" target="_blank" class="pill-note" style="color:var(--teal);padding:2px 6px;font-size:11px">📁 Drive</a>'
+      : '<span style="color:#425449">—</span>';
+
+    return '<tr>' +
+      '<td style="text-align:center;color:var(--mut)">' + (idx + 1) + '</td>' +
+      '<td>' +
+        '<div style="display:flex;align-items:center;gap:8px">' +
+          '<b style="color:#fff;cursor:pointer" onclick="openStudentProfile(\'' + st.id + '\')">' + esc(st.hoTen) + '</b>' +
+          '<span class="badge rk-' + (st.rank || 'A') + '" style="font-size:10px;padding:1px 5px">' + esc(st.rank) + '</span>' +
+        '</div>' +
+      '</td>' +
+      '<td><span class="badge" style="background:#13281d;color:var(--teal)">' + esc(st.lop) + '</span></td>' +
+      '<td><b>' + esc(st.giaoVien) + '</b></td>' +
+      '<td><b>' + fmtMoney(st.tuitionFee) + '</b></td>' +
+      '<td>' + badgeHtml + '</td>' +
+      '<td style="text-align:center"><b style="color:' + (st.remainingSessions <= 1 ? 'var(--warn)' : 'var(--teal)') + '">' + st.remainingSessions + '</b> / ' + st.totalDealSessions + '</td>' +
+      sessionCells +
+      '<td style="text-align:center">' + driveBtn + '</td>' +
+      '</tr>';
+  }).join('');
+}
+
+function renderSettlementTable(data) {
+  if (!data || !data.students) return;
+
+  const monthLabel = $('settlementMonthLabel');
+  if (monthLabel) monthLabel.textContent = 'Tháng ' + String(data.month).padStart(2, '0') + '/' + data.year;
+
+  const body = $('settlementTableBody');
+  if (!body) return;
+
+  if (!data.students.length) {
+    body.innerHTML = '<tr><td colspan="8" class="empty">Chưa có dữ liệu học viên trong tháng này.</td></tr>';
+    return;
+  }
+
+  body.innerHTML = data.students.map(function(st){
+    const typeLabel = st.studentType === 'STUDIED_MANY'
+      ? '<span class="badge" style="background:#2b1a3a;color:#b78fe0">Nhiều khoá (70%)</span>'
+      : (st.studentType === 'STUDIED_2_TERMS' 
+          ? '<span class="badge" style="background:#16352c;color:var(--teal)">2 khoá (70%)</span>'
+          : '<span class="badge" style="background:#3a2f1a;color:var(--gold)">Mới (60%)</span>');
+
+    const rateLabel = st.isPrimaryTeacher
+      ? Math.round(st.teacherCommissionRate * 100) + '%'
+      : '150k/buổi (' + st.totalDealSessions + 'b)';
+
+    const cashBtn = '<button class="btn ghost sm" style="padding:1px 6px;font-size:11px" onclick="promptUpdateCashCollected(\'' + st.id + '\',' + st.cashCollected + ')">' +
+      (st.cashCollected > 0 ? ('💵 ' + fmtMoney(st.cashCollected)) : '+ Thu mặt') +
+      '</button>';
+
+    return '<tr>' +
+      '<td><b style="color:#fff">' + esc(st.hoTen) + '</b><br><small style="color:var(--mut)">Lớp ' + esc(st.lop) + '</small></td>' +
+      '<td>' + typeLabel + '</td>' +
+      '<td><b>' + esc(st.giaoVien) + '</b></td>' +
+      '<td><b>' + fmtMoney(st.tuitionFee) + '</b></td>' +
+      '<td>' + rateLabel + '</td>' +
+      '<td><b style="color:var(--gold)">' + fmtMoney(st.teacherRevenue) + '</b></td>' +
+      '<td>' + cashBtn + '</td>' +
+      '<td><b style="color:var(--teal)">' + fmtMoney(st.centerRevenue) + '</b></td>' +
+      '</tr>';
+  }).join('');
+}
+
+function renderVietQRCard(data) {
+  if (!data || !data.summary || !data.vietQr) return;
+  const s = data.summary;
+  const qr = data.vietQr;
+
+  if ($('qr_totalTuition')) $('qr_totalTuition').textContent = fmtMoney(s.totalTuition);
+  if ($('qr_linhRevenue')) $('qr_linhRevenue').textContent = fmtMoney(s.totalLinh);
+  if ($('qr_cashCollected')) $('qr_cashCollected').textContent = fmtMoney(s.totalCashCollected);
+  if ($('qr_thoTransfersLinh')) $('qr_thoTransfersLinh').textContent = fmtMoney(s.thoTransfersToLinh);
+
+  if ($('vietQrImage')) $('vietQrImage').src = qr.qrUrl;
+  if ($('btnDownloadQr')) $('btnDownloadQr').href = qr.qrUrl;
+  if ($('vq_stk')) $('vq_stk').textContent = qr.accountNumber;
+  if ($('vq_memo')) $('vq_memo').textContent = qr.memo;
+}
+
+function quickCheckInSession(studentId, buoiSo, currentAttended) {
+  if (!studentId) return;
+  const isChecked = buoiSo <= currentAttended;
+
+  if (isChecked) {
+    if (!confirm('Bạn có muốn huỷ điểm danh Buổi ' + buoiSo + ' của học viên này không?')) return;
+    toast('⏳ Đang huỷ điểm danh...');
+    google.script.run
+      .withSuccessHandler(function(res){
+        if (res && res.success) {
+          toast('✅ Đã huỷ điểm danh Buổi ' + buoiSo);
+          loadTuitionSettlement();
+          loadStudents();
+        } else {
+          toast('⚠️ ' + (res ? res.message : 'Lỗi huỷ điểm danh'));
+        }
+      })
+      .quickRemoveAttendance(studentId, buoiSo);
+  } else {
+    toast('⏳ Đang ghi nhận điểm danh Buổi ' + buoiSo + '...');
+    google.script.run
+      .withSuccessHandler(function(res){
+        if (res && res.success) {
+          toast('🎉 Đã điểm danh thành công Buổi ' + buoiSo + '!');
+          loadTuitionSettlement();
+          loadStudents();
+        } else {
+          toast('⚠️ ' + (res ? res.message : 'Lỗi điểm danh'));
+        }
+      })
+      .quickCheckInAttendance(studentId, buoiSo);
+  }
+}
+
+function quickTogglePayment(studentId, currentPaid) {
+  const newStatus = !currentPaid;
+  const statusLabel = newStatus ? 'ĐÃ ĐÓNG ĐỦ HỌC PHÍ' : 'CHƯA ĐÓNG HỌC PHÍ';
+  if (!confirm('Chuyển trạng thái học phí học viên sang: ' + statusLabel + '?')) return;
+
+  toast('⏳ Đang cập nhật học phí...');
+  google.script.run
+    .withSuccessHandler(function(res){
+      toast('✅ Đã chuyển trạng thái: ' + statusLabel);
+      loadTuitionSettlement();
+      loadStudents();
+    })
+    .updateTuitionPayment(studentId, newStatus);
+}
+
+function promptUpdateCashCollected(studentId, currentCash) {
+  const input = prompt('Nhập số tiền mặt GV Linh đã thu trực tiếp từ học viên (VNĐ):', currentCash || 0);
+  if (input === null) return;
+  const amount = parseFloat(input.replace(/[^\d]/g, '')) || 0;
+
+  toast('⏳ Đang cập nhật tiền mặt đã thu...');
+  google.script.run
+    .withSuccessHandler(function(res){
+      toast('✅ Đã cập nhật tiền mặt: ' + fmtMoney(amount));
+      loadTuitionSettlement();
+      loadStudents();
+    })
+    .updateTuitionPayment(studentId, undefined, amount);
+}
+
+function copyTransferInfo() {
+  if (!CURRENT_TUITION_DATA || !CURRENT_TUITION_DATA.vietQr) return;
+  const q = CURRENT_TUITION_DATA.vietQr;
+  const text = 'NGÂN HÀNG: ' + q.bank + '\n'
+             + 'SỐ TÀI KHOẢN: ' + q.accountNumber + '\n'
+             + 'CHỦ TÀI KHOẢN: ' + q.accountName + '\n'
+             + 'SỐ TIỀN: ' + fmtMoney(q.amount) + '\n'
+             + 'NỘI DUNG: ' + q.memo;
+
+  navigator.clipboard.writeText(text).then(function(){
+    toast('📋 Đã sao chép toàn bộ thông tin chuyển khoản vào Clipboard!');
+  }).catch(function(){
+    prompt('Copy thông tin chuyển khoản dưới đây:', text);
+  });
+}
+
+// ==================== CẤU HÌNH DÙNG CHUNG PHÍA CLIENT ====================
+let APP_CONFIG = {};
+
+function loadAppConfig() {
+  google.script.run.withSuccessHandler(function(cfg){
+    APP_CONFIG = cfg || {};
+  }).getConfig();
+}
+
+function todayStr() {
+  const d = new Date();
+  return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
+}
+
+// ==================== CHIP CHỌN NHANH (thay cho nhập tay) ====================
+const CHIP_CALLBACKS = {};
+
+function renderChips(containerId, options, selected, callback) {
+  const box = $(containerId);
+  if (!box) return;
+  box.dataset.value = selected || '';
+  if (callback) CHIP_CALLBACKS[containerId] = callback;
+  box.innerHTML = options.map(function(o){
+    const v = typeof o === 'object' ? o.v : o;
+    const l = typeof o === 'object' ? o.l : o;
+    return '<button type="button" class="pick-chip ' + (String(v) === String(selected) ? 'on' : '') + '" data-v="' + esc(v) + '" onclick="pickChip(\'' + containerId + '\', this)">' + esc(l) + '</button>';
+  }).join('');
+}
+
+function pickChip(containerId, btn) {
+  const box = $(containerId);
+  box.querySelectorAll('.pick-chip').forEach(function(b){ b.classList.toggle('on', b === btn); });
+  box.dataset.value = btn.dataset.v;
+  if (CHIP_CALLBACKS[containerId]) CHIP_CALLBACKS[containerId](btn.dataset.v);
+}
+
+function getChipValue(containerId) { return ($(containerId) && $(containerId).dataset.value) || ''; }
+
+function setChipValue(containerId, v) {
+  const box = $(containerId);
+  if (!box) return;
+  box.dataset.value = v || '';
+  box.querySelectorAll('.pick-chip').forEach(function(b){ b.classList.toggle('on', String(b.dataset.v) === String(v)); });
+}
+
+// ==================== HỌC THỬ & DANH SÁCH CHỜ (MODULE 5) ====================
+const TRIAL_STATUS_META = {
+  'new':      'Mới đăng ký',
+  'tested':   'Đã test',
+  'waiting':  'Chờ phản hồi',
+  'rejected': 'Từ chối'
+};
+const VOICE_TYPE_OPTIONS = [
+  { v: 'Nam cao (Tenor)', l: 'Nam cao' }, { v: 'Nam trung (Baritone)', l: 'Nam trung' }, { v: 'Nam trầm (Bass)', l: 'Nam trầm' },
+  { v: 'Nữ cao (Soprano)', l: 'Nữ cao' }, { v: 'Nữ trung (Mezzo-soprano)', l: 'Nữ trung' }, { v: 'Nữ trầm (Contralto)', l: 'Nữ trầm' },
+  { v: 'Chưa xác định', l: 'Chưa rõ' }
+];
+const TRIAL_SOURCES = ['Facebook', 'TikTok', 'Google', 'Bạn bè giới thiệu', 'Học viên cũ', 'Khác'];
+let TRIAL_FILTER = 'open';
+
+function getTrialStatus(s) {
+  const ts = String(s.trialStatus || '').trim();
+  if (TRIAL_STATUS_META[ts]) return ts;
+  const st = String(s.tinhTrang || '');
+  if (st.indexOf('Chờ phản hồi') >= 0) return 'waiting';
+  if (st.indexOf('Từ chối') >= 0) return 'rejected';
+  return s.rank ? 'tested' : 'new';
+}
+
+function setTrialFilter(f) {
+  TRIAL_FILTER = f;
+  document.querySelectorAll('#trialFilterBar .view-btn').forEach(function(b){ b.classList.toggle('active', b.dataset.tf === f); });
+  renderTrialList();
+}
+
+function renderTrialList() {
+  const body = $('trialBody');
+  if (!body) return;
+  const all = ALL_STUDENTS.filter(isTrialStudent);
+  const openCount = all.filter(function(s){ return getTrialStatus(s) !== 'rejected'; }).length;
+  $('trialCount').textContent = openCount + ' đang theo dõi · ' + (all.length - openCount) + ' từ chối';
+
+  const list = all.filter(function(s){
+    const st = getTrialStatus(s);
+    if (TRIAL_FILTER === 'open') return st !== 'rejected';
+    if (TRIAL_FILTER === 'rejected') return st === 'rejected';
+    return true;
+  }).sort(function(a, b){
+    return String(b.ngayHocThu || b.createdAt || '').localeCompare(String(a.ngayHocThu || a.createdAt || ''));
+  });
+
+  if (!list.length) {
+    body.innerHTML = '<tr><td colspan="7" class="empty">Chưa có học viên học thử. Bấm "+ Thêm học viên học thử".</td></tr>';
+    return;
+  }
+
+  const canDelete = hasPerm('students', 'delete');
+  body.innerHTML = list.map(function(s, i){
+    const st = getTrialStatus(s);
+    const rankHtml = (st !== 'new' && s.rank) ? '<span class="badge rk-' + esc(s.rank) + '">' + esc(s.rank) + '</span>' : '<span style="color:var(--mut)">—</span>';
+    const statusSel = '<select class="trial-status-select" onchange="updateTrialStatusUi(\'' + s.id + '\', this.value)">' +
+      Object.keys(TRIAL_STATUS_META).map(function(k){
+        return '<option value="' + k + '" ' + (k === st ? 'selected' : '') + '>' + TRIAL_STATUS_META[k] + '</option>';
+      }).join('') + '</select>';
+    const actions = st === 'rejected'
+      ? '<button class="btn ghost sm" onclick="updateTrialStatusUi(\'' + s.id + '\',\'waiting\')">♻ Khôi phục</button>' +
+        (canDelete ? '<button class="btn ghost danger sm" onclick="deleteSingleStudent(\'' + s.id + '\',\'' + esc(s.hoTen) + '\')">🗑 Xoá</button>' : '')
+      : '<button class="btn ghost sm" onclick="openTrialTest(\'' + s.id + '\')">🪄 Test</button>' +
+        '<button class="btn sm gold" onclick="openTrialConfirm(\'' + s.id + '\')">✅ Chốt</button>' +
+        '<button class="btn ghost danger sm" onclick="rejectTrial(\'' + s.id + '\')">❌ Huỷ</button>';
+    return '<tr class="' + (st === 'rejected' ? 'rejected' : '') + '">' +
+      '<td style="color:var(--mut)">' + (i + 1) + '</td>' +
+      '<td><b style="cursor:pointer" onclick="openTrialModal(\'' + s.id + '\')" title="Sửa thông tin">' + esc(s.hoTen) + ' ✏</b>' +
+        (s.dienThoai ? '<br><small style="color:var(--mut)">📞 ' + esc(s.dienThoai) + '</small>' : '') +
+        (s.nguonGioiThieu ? '<br><small style="color:var(--mut)">via ' + esc(s.nguonGioiThieu) + '</small>' : '') + '</td>' +
+      '<td>' + esc(s.loaiGiong || '—') + '</td>' +
+      '<td>' + fmtDate(s.ngayHocThu || s.createdAt) + '</td>' +
+      '<td>' + rankHtml + '</td>' +
+      '<td>' + statusSel + '</td>' +
+      '<td><div class="row-flex" style="gap:4px;justify-content:flex-end">' + actions + '</div></td>' +
+    '</tr>';
+  }).join('');
+}
+
+function openTrialModal(id) {
+  const s = id ? ALL_STUDENTS.filter(function(x){ return String(x.id) === String(id); })[0] : null;
+  $('tr_title').textContent = s ? '✏ Sửa học viên học thử' : '🎤 Thêm học viên học thử';
+  $('tr_id').value = s ? s.id : '';
+  $('tr_hoTen').value = s ? (s.hoTen || '') : '';
+  $('tr_dienThoai').value = s ? (s.dienThoai || '') : '';
+  $('tr_ngayHocThu').value = s ? (s.ngayHocThu || '') : todayStr();
+  $('tr_ghiChu').value = s ? (s.ghiChu || '') : '';
+  renderChips('tr_giongChips', VOICE_TYPE_OPTIONS, s ? s.loaiGiong : '');
+  renderChips('tr_sourceChips', TRIAL_SOURCES, s ? s.nguonGioiThieu : '');
+  open_('mTrial');
+  setTimeout(function(){ $('tr_hoTen').focus(); }, 50);
+}
+
+function saveTrialFromModal() {
+  const hoTen = $('tr_hoTen').value.trim();
+  if (!hoTen) { toast('⚠️ Vui lòng nhập họ tên'); return; }
+  const btn = $('tr_saveBtn');
+  btn.disabled = true;
+  btn.innerHTML = '<span class="spin"></span> Đang lưu...';
+  google.script.run
+    .withSuccessHandler(function(res){
+      btn.disabled = false;
+      btn.textContent = 'Lưu';
+      if (res && res.success) {
+        close_('mTrial');
+        toast('✅ ' + res.message);
+        loadStudents();
+        loadDashboard();
+      } else {
+        toast('⚠️ ' + (res ? res.message : 'Lỗi lưu học viên'));
+      }
+    })
+    .withFailureHandler(function(err){
+      btn.disabled = false;
+      btn.textContent = 'Lưu';
+      toast('❌ Lỗi: ' + (err ? err.message : 'Không thể kết nối máy chủ'));
+    })
+    .saveTrialStudent({
+      id:             $('tr_id').value,
+      hoTen:          hoTen,
+      dienThoai:      $('tr_dienThoai').value.trim(),
+      loaiGiong:      getChipValue('tr_giongChips'),
+      ngayHocThu:     $('tr_ngayHocThu').value || todayStr(),
+      nguonGioiThieu: getChipValue('tr_sourceChips'),
+      ghiChu:         $('tr_ghiChu').value.trim()
+    });
+}
+
+function updateTrialStatusUi(id, status) {
+  const s = ALL_STUDENTS.filter(function(x){ return String(x.id) === String(id); })[0];
+  google.script.run.withSuccessHandler(function(res){
+    if (res && res.success) {
+      if (s) { s.trialStatus = status; s.tinhTrang = status === 'waiting' ? 'Chờ phản hồi' : (status === 'rejected' ? 'Từ chối học' : 'Đã học thử'); }
+      toast('✅ Trạng thái: ' + TRIAL_STATUS_META[status]);
+      renderTrialList();
+    } else {
+      toast('⚠️ ' + (res ? res.message : 'Lỗi cập nhật'));
+    }
+  }).updateTrialStatus(id, status);
+}
+
+function rejectTrial(id) {
+  const s = ALL_STUDENTS.filter(function(x){ return String(x.id) === String(id); })[0];
+  if (!confirm('Đánh dấu "' + (s ? s.hoTen : '') + '" là TỪ CHỐI (không học)?')) return;
+  updateTrialStatusUi(id, 'rejected');
+}
+
+function openTrialTest(id) {
+  const s = ALL_STUDENTS.filter(function(x){ return String(x.id) === String(id); })[0];
+  if (s) openTestModalFor(s, 'trial');
+}
+
+function defaultFeeForSessions(n) {
+  n = parseInt(n, 10) || 0;
+  if (n >= 12) return 3500000;
+  if (n >= 8) return 2500000;
+  return 1750000;
+}
+
+function onTrialConfirmBuoiChange(fromInput) {
+  const n = parseInt($('tc_soBuoi').value, 10) || 0;
+  if (fromInput) setChipValue('tc_buoiChips', String(n));
+  $('tc_hocPhi').value = defaultFeeForSessions(n);
+}
+
+function openTrialConfirm(id) {
+  const s = ALL_STUDENTS.filter(function(x){ return String(x.id) === String(id); })[0];
+  if (!s) return;
+  if (!hasPerm('students', 'edit')) { toast('⚠️ Bạn không có quyền chốt đăng ký'); return; }
+  $('tc_id').value = s.id;
+  $('tc_name').textContent = s.hoTen;
+  renderChips('tc_lopChips', ['TN11', 'TN12', 'TNN', 'TN-VIP'], s.lop || 'TN11');
+  renderChips('tc_gvChips', ['Linh', 'Quân'], s.giaoVien || 'Linh');
+  renderChips('tc_buoiChips', [{ v: '6', l: '6 buổi' }, { v: '8', l: '8 buổi' }, { v: '12', l: '12 buổi' }], '8', function(v){
+    $('tc_soBuoi').value = v;
+    onTrialConfirmBuoiChange(false);
+  });
+  $('tc_soBuoi').value = 8;
+  $('tc_ngayBatDau').value = todayStr();
+  $('tc_hocPhi').value = defaultFeeForSessions(8);
+  $('tc_daDong').value = 'false';
+  open_('mTrialConfirm');
+}
+
+function confirmTrialFromModal() {
+  const id = $('tc_id').value;
+  const soBuoi = parseInt($('tc_soBuoi').value, 10);
+  if (!soBuoi || soBuoi <= 0) { toast('⚠️ Số buổi khoá không hợp lệ'); return; }
+  const info = {
+    lop:        getChipValue('tc_lopChips') || 'TN11',
+    giaoVien:   getChipValue('tc_gvChips') || 'Linh',
+    soBuoiKhoa: soBuoi,
+    ngayBatDau: $('tc_ngayBatDau').value || todayStr()
+  };
+  if (isAdmin()) {
+    info.hocPhi = parseFloat($('tc_hocPhi').value) || 0;
+    info.daDongHocPhi = $('tc_daDong').value === 'true';
+  }
+  const btn = $('tc_btn');
+  btn.disabled = true;
+  btn.innerHTML = '<span class="spin"></span> Đang chuyển...';
+  google.script.run
+    .withSuccessHandler(function(res){
+      btn.disabled = false;
+      btn.textContent = '✅ Xác nhận chuyển';
+      if (res && res.success) {
+        close_('mTrialConfirm');
+        toast('🎉 ' + res.message);
+        delete CACHE_STUDENTS_DETAIL[id];
+        loadStudents();
+        loadDashboard();
+      } else {
+        toast('⚠️ ' + (res ? res.message : 'Lỗi chốt đăng ký'));
+      }
+    })
+    .withFailureHandler(function(err){
+      btn.disabled = false;
+      btn.textContent = '✅ Xác nhận chuyển';
+      toast('❌ Lỗi: ' + (err ? err.message : 'Không thể kết nối máy chủ'));
+    })
+    .confirmTrialStudent(id, info);
+}
+
+// ==================== BIỂU ĐỒ TIẾN ĐỘ (MODULE 3) ====================
+function getScoredSessions(list) {
+  return (list || []).map(function(b){
+    const sc = parseScoreCard(b.scoreCardJson);
+    if (!sc) return null;
+    return { b: b, scores: sc, sum: calcScoreSummary(sc) };
+  }).filter(function(x){ return x && x.sum.count > 0; }).sort(function(a, b){
+    const d = (parseInt(a.b.buoiSo, 10) || 0) - (parseInt(b.b.buoiSo, 10) || 0);
+    return d !== 0 ? d : String(a.b.ngayHoc || '').localeCompare(String(b.b.ngayHoc || ''));
+  });
+}
+
+function renderProgressCharts(list) {
+  const data = getScoredSessions(list);
+  const empty = $('profProgressEmpty');
+  const content = $('profProgressContent');
+  if (!empty || !content) return;
+  if (!data.length) { empty.style.display = 'block'; content.style.display = 'none'; return; }
+  empty.style.display = 'none';
+  content.style.display = 'block';
+  $('progLineChart').innerHTML = buildLineChartSvg(data);
+  $('progRadarChart').innerHTML = buildRadarChartSvg(data[0], data[data.length - 1]);
+  $('progRadarFirstLbl').textContent = 'Buổi ' + (data[0].b.buoiSo || '?') + ' (đầu)';
+  $('progRadarLastLbl').textContent = 'Buổi ' + (data[data.length - 1].b.buoiSo || '?') + ' (gần nhất)';
+  $('progMilestoneTable').innerHTML = buildMilestoneTable(data);
+}
+
+function buildLineChartSvg(data) {
+  const W = 640, H = 260, pl = 40, pr = 18, pt = 16, pb = 34;
+  const n = data.length;
+  const x = function(i){ return n === 1 ? (pl + (W - pl - pr) / 2) : pl + i * (W - pl - pr) / (n - 1); };
+  const y = function(v){ return pt + (24 - v) / 16 * (H - pt - pb); };
+  const yBase = y(8);
+
+  let grid = '';
+  [8, 12, 16, 20, 24].forEach(function(v){
+    grid += '<line x1="' + pl + '" x2="' + (W - pr) + '" y1="' + y(v) + '" y2="' + y(v) + '" stroke="#223629" stroke-width="1"/>' +
+      '<text x="' + (pl - 8) + '" y="' + (y(v) + 4) + '" text-anchor="end" font-size="11" fill="#8ea696">' + v + '</text>';
+  });
+  const ref = '<line x1="' + pl + '" x2="' + (W - pr) + '" y1="' + y(16) + '" y2="' + y(16) + '" stroke="#C5A059" stroke-width="1.5" stroke-dasharray="6 5"/>' +
+    '<text x="' + (W - pr) + '" y="' + (y(16) - 5) + '" text-anchor="end" font-size="10.5" fill="#C5A059">Ranh giới B (16)</text>';
+
+  const pts = data.map(function(d, i){ return [x(i), y(Math.max(8, Math.min(24, d.sum.total)))]; });
+  const line = pts.map(function(p, i){ return (i ? 'L' : 'M') + p[0].toFixed(1) + ',' + p[1].toFixed(1); }).join(' ');
+  const area = n > 1 ? line + ' L' + pts[n - 1][0].toFixed(1) + ',' + yBase + ' L' + pts[0][0].toFixed(1) + ',' + yBase + ' Z' : '';
+
+  const step = Math.ceil(n / 12);
+  const labels = data.map(function(d, i){
+    if (i % step !== 0 && i !== n - 1) return '';
+    return '<text x="' + x(i) + '" y="' + (H - 12) + '" text-anchor="middle" font-size="11" fill="#8ea696">B' + esc(d.b.buoiSo || (i + 1)) + '</text>';
+  }).join('');
+
+  const dots = data.map(function(d, i){
+    return '<circle cx="' + pts[i][0].toFixed(1) + '" cy="' + pts[i][1].toFixed(1) + '" r="4.5" fill="#34D399" stroke="#070d0a" stroke-width="2">' +
+      '<title>Buổi ' + esc(d.b.buoiSo || '') + ' · ' + fmtDate(d.b.ngayHoc) + ' · ' + d.sum.total + '/24' + (d.sum.grade ? ' (' + d.sum.grade + ')' : '') + '</title></circle>';
+  }).join('');
+
+  return '<svg viewBox="0 0 ' + W + ' ' + H + '" preserveAspectRatio="xMidYMid meet" role="img" aria-label="Tổng điểm qua các buổi">' +
+    '<defs><linearGradient id="progAreaGrad" x1="0" y1="0" x2="0" y2="1">' +
+      '<stop offset="0%" stop-color="#34D399" stop-opacity="0.35"/><stop offset="100%" stop-color="#34D399" stop-opacity="0"/>' +
+    '</linearGradient></defs>' +
+    grid + ref +
+    (area ? '<path d="' + area + '" fill="url(#progAreaGrad)"/>' : '') +
+    (n > 1 ? '<path d="' + line + '" fill="none" stroke="#34D399" stroke-width="2.5" stroke-linejoin="round" stroke-linecap="round"/>' : '') +
+    dots + labels +
+  '</svg>';
+}
+
+function buildRadarChartSvg(first, last) {
+  const cx = 150, cy = 150, R = 105;
+  const pt = function(i, r){
+    const a = (-90 + i * 45) * Math.PI / 180;
+    return [cx + r * Math.cos(a), cy + r * Math.sin(a)];
+  };
+  const poly = function(scores){
+    return SCORE_CRITERIA.map(function(c, i){
+      const v = parseInt(scores[c.key], 10) || 0;
+      const p = pt(i, R * v / 3);
+      return p[0].toFixed(1) + ',' + p[1].toFixed(1);
+    }).join(' ');
+  };
+
+  let rings = '';
+  [1, 2, 3].forEach(function(lv){
+    const ring = SCORE_CRITERIA.map(function(c, i){ const p = pt(i, R * lv / 3); return p[0].toFixed(1) + ',' + p[1].toFixed(1); }).join(' ');
+    rings += '<polygon points="' + ring + '" fill="none" stroke="#223629" stroke-width="1"/>';
+  });
+  let axes = '';
+  SCORE_CRITERIA.forEach(function(c, i){
+    const p = pt(i, R);
+    const lp = pt(i, R + 20);
+    const cos = Math.cos((-90 + i * 45) * Math.PI / 180);
+    const anchor = Math.abs(cos) < 0.2 ? 'middle' : (cos > 0 ? 'start' : 'end');
+    axes += '<line x1="' + cx + '" y1="' + cy + '" x2="' + p[0].toFixed(1) + '" y2="' + p[1].toFixed(1) + '" stroke="#223629" stroke-width="1"/>' +
+      '<text x="' + lp[0].toFixed(1) + '" y="' + (lp[1] + 4).toFixed(1) + '" text-anchor="' + anchor + '" font-size="11.5" fill="#cfe2d5">' + c.short + '</text>';
+  });
+
+  const showFirst = first && last && first.b !== last.b;
+  return '<svg viewBox="-50 -10 400 320" preserveAspectRatio="xMidYMid meet" role="img" aria-label="So sánh buổi đầu và buổi gần nhất">' +
+    rings + axes +
+    (showFirst ? '<polygon points="' + poly(first.scores) + '" fill="rgba(245,158,11,0.3)" stroke="#f59e0b" stroke-width="1.5"/>' : '') +
+    '<polygon points="' + poly(last.scores) + '" fill="rgba(52,211,153,0.5)" stroke="#34D399" stroke-width="2"/>' +
+  '</svg>';
+}
+
+function buildMilestoneTable(data) {
+  const MILESTONES = [1, 4, 8, 12, 16, 20, 24];
+  let picks = data.filter(function(d, i){
+    return i === 0 || i === data.length - 1 || MILESTONES.indexOf(parseInt(d.b.buoiSo, 10)) >= 0;
+  });
+  if (picks.length > 6) picks = picks.slice(0, 5).concat([picks[picks.length - 1]]);
+
+  const head = '<tr><th>Tiêu chí</th>' + picks.map(function(d, i){
+    return '<th>' + (i === picks.length - 1 && picks.length > 1 ? 'Gần nhất<br><small style="font-weight:400">B' + esc(d.b.buoiSo || '') + '</small>' : 'Buổi ' + esc(d.b.buoiSo || '?')) + '</th>';
+  }).join('') + '</tr>';
+
+  const rows = SCORE_CRITERIA.map(function(c){
+    return '<tr><td>' + c.short + '</td>' + picks.map(function(d){
+      const v = parseInt(d.scores[c.key], 10);
+      return '<td>' + (v ? scoreIcon(v) + ' ' + v : '<span style="color:var(--mut)">—</span>') + '</td>';
+    }).join('') + '</tr>';
+  }).join('');
+
+  const total = '<tr class="total-row"><td>TỔNG</td>' + picks.map(function(d){ return '<td>' + d.sum.total + '/24</td>'; }).join('') + '</tr>';
+  const grade = '<tr><td>Xếp loại</td>' + picks.map(function(d){
+    return '<td>' + (d.sum.grade ? '<span class="grade-badge grade-' + d.sum.grade + '">' + d.sum.grade + '</span>' : '<small style="color:var(--mut)">' + d.sum.count + '/8</small>') + '</td>';
+  }).join('') + '</tr>';
+
+  return '<table class="milestone-table"><thead>' + head + '</thead><tbody>' + rows + total + grade + '</tbody></table>';
+}
+
+// ==================== LỊCH DẠY TỪ SHEET "XẾP LỊCH" (MODULE 8) ====================
+let SCHEDULE_DATA = null;
+let SCHED_DAY = (new Date().getDay() + 6) % 7; // Thứ 2 = 0 ... Chủ nhật = 6
+const SCHEDULE_TOOL_LABELS = {
+  taoDanhSachLichDayLinh:          'Tạo lịch Calendar GV Linh (tuần sau)',
+  taoDanhSachLichDayLinhTuanNay:   'Tạo lịch Calendar GV Linh (tuần này)',
+  taoDanhSachLichDayconlai:        'Tạo lịch Calendar GV khác (tuần sau)',
+  taoDanhSachLichDayconlaiTuanNay: 'Tạo lịch Calendar GV khác (tuần này)',
+  tongHopLichTrongNangCao:         '🟩 Lịch trống',
+  tongHopLichHocThu:               '🎤 Lịch học thử',
+  xoaLichDayLinhTuanNay:           'Xoá lịch Calendar GV Linh tuần này'
+};
+
+function toggleScheduleTools(e) {
+  if (e) e.stopPropagation();
+  $('schedToolsMenu').classList.toggle('on');
+}
+function closeScheduleTools() {
+  const m = $('schedToolsMenu');
+  if (m) m.classList.remove('on');
+}
+
+function loadScheduleSheet() {
+  closeScheduleTools();
+  $('schedGridWrap').innerHTML = '<div class="empty"><span class="spin"></span> Đang đọc sheet XẾP LỊCH...</div>';
+  google.script.run
+    .withSuccessHandler(function(res){
+      if (!res || !res.success) {
+        $('schedGridWrap').innerHTML = '<div class="empty">⚠️ ' + esc(res ? res.message : 'Không đọc được sheet') + '</div>';
+        return;
+      }
+      SCHEDULE_DATA = res;
+      $('schedSubtitle').textContent = (res.title || 'Lịch tuần') + ' · ' + (res.spreadsheetName || '');
+      if (res.sheetUrl) { $('schedSheetLink').href = res.sheetUrl; $('schedSheetLink').style.display = 'inline'; }
+      renderScheduleGrid();
+    })
+    .withFailureHandler(function(err){
+      $('schedGridWrap').innerHTML = '<div class="empty">❌ ' + esc(err ? err.message : 'Lỗi kết nối') + '</div>';
+    })
+    .getScheduleSheetData();
+}
+
+function normName(s) {
+  return String(s || '').normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/đ/g, 'd').replace(/Đ/g, 'D').toLowerCase().trim();
+}
+
+function parseTimeRange(t) {
+  const m = String(t || '').toLowerCase().replace(/\s/g, '').match(/(\d{1,2})(?:[h:](\d{2})?)?h?-(\d{1,2})(?:[h:](\d{2})?)?/);
+  if (!m) return null;
+  return [parseInt(m[1], 10) * 60 + (parseInt(m[2], 10) || 0), parseInt(m[3], 10) * 60 + (parseInt(m[4], 10) || 0)];
+}
+
+function isFreeCell(v) { return normName(v).indexOf('trong') >= 0 && /trống/i.test(v); }
+
+function cellNames(v) {
+  return String(v || '').split(/[\n,+\/&;]| và /).map(normName).filter(Boolean);
+}
+
+// Xác định ô xung đột: cùng ngày, khung giờ chồng nhau, trùng học viên hoặc trùng giáo viên
+function computeScheduleConflicts(data) {
+  const map = {};
+  Object.keys(data.studentTeacherMap || {}).forEach(function(k){ map[normName(k)] = normName(data.studentTeacherMap[k]); });
+  const conflicts = {};
+  const rows = data.rows;
+  for (let d = 0; d < 7; d++) {
+    for (let i = 0; i < rows.length; i++) {
+      for (let j = i + 1; j < rows.length; j++) {
+        const a = rows[i].cells[d], b = rows[j].cells[d];
+        if (!a || !b || isFreeCell(a) || isFreeCell(b)) continue;
+        const ra = parseTimeRange(rows[i].time), rb = parseTimeRange(rows[j].time);
+        const overlap = (ra && rb) ? (ra[0] < rb[1] && rb[0] < ra[1]) : (rows[i].time === rows[j].time);
+        if (!overlap) continue;
+        const na = cellNames(a), nb = cellNames(b);
+        const sameStudent = na.some(function(x){ return nb.indexOf(x) >= 0; });
+        const ta = na.map(function(x){ return map[x]; }).filter(Boolean);
+        const tb = nb.map(function(x){ return map[x]; }).filter(Boolean);
+        const sameTeacher = ta.some(function(x){ return tb.indexOf(x) >= 0; });
+        if (sameStudent || sameTeacher) {
+          const why = sameStudent ? 'Trùng học viên' : 'Trùng giáo viên';
+          conflicts[i + '_' + d] = why + ' với ' + rows[j].place + ' ' + rows[j].time;
+          conflicts[j + '_' + d] = why + ' với ' + rows[i].place + ' ' + rows[i].time;
+        }
+      }
+    }
+  }
+  return conflicts;
+}
+
+function setScheduleDay(d) {
+  SCHED_DAY = (d + 7) % 7;
+  renderScheduleGrid();
+}
+
+function renderScheduleGrid() {
+  const data = SCHEDULE_DATA;
+  if (!data) return;
+  const days = data.days && data.days.some(Boolean) ? data.days : ['Thứ 2', 'Thứ 3', 'Thứ 4', 'Thứ 5', 'Thứ 6', 'Thứ 7', 'Chủ nhật'];
+  const conflicts = computeScheduleConflicts(data);
+
+  $('schedDayChips').innerHTML = days.map(function(d, i){
+    return '<button type="button" class="pick-chip ' + (i === SCHED_DAY ? 'on' : '') + '" onclick="setScheduleDay(' + i + ')">' + esc(d || ('Ngày ' + (i + 1))) + '</button>';
+  }).join('');
+
+  if (!data.rows.length) {
+    $('schedGridWrap').innerHTML = '<div class="empty">Sheet XẾP LỊCH chưa có dữ liệu.</div>';
+    return;
+  }
+
+  let lastPlace = null;
+  const body = data.rows.map(function(r, i){
+    const placeCell = '<td class="s-place">' + (r.place !== lastPlace ? esc(r.place) : '') + '</td>';
+    lastPlace = r.place;
+    const cells = r.cells.map(function(v, d){
+      let cls = 's-empty';
+      let title = '';
+      if (v) cls = isFreeCell(v) ? 's-free' : 's-busy';
+      if (conflicts[i + '_' + d]) { cls = 's-conflict'; title = conflicts[i + '_' + d]; }
+      return '<td data-day="' + d + '" class="' + cls + (d === SCHED_DAY ? ' day-on' : '') + '"' + (title ? ' title="⚠ ' + esc(title) + '"' : '') + '>' +
+        esc(v) + (title ? ' ⚠' : '') + '</td>';
+    }).join('');
+    return '<tr>' + placeCell + '<td class="s-time">' + esc(r.time) + '</td>' + cells + '</tr>';
+  }).join('');
+
+  const head = '<tr><th>Địa điểm</th><th>Giờ</th>' + days.map(function(d, i){
+    return '<th data-day="' + i + '" class="' + (i === SCHED_DAY ? 'day-on' : '') + '">' + esc(d) + '</th>';
+  }).join('') + '</tr>';
+
+  const conflictCount = Object.keys(conflicts).length / 2;
+  $('schedGridWrap').innerHTML =
+    (conflictCount ? '<div class="pill-note" style="color:#ffb4ab;margin-bottom:8px">⚠ Phát hiện ' + conflictCount + ' xung đột giờ (ô màu đỏ, chạm để xem chi tiết)</div>' : '') +
+    '<table class="sched-table single-day"><thead>' + head + '</thead><tbody>' + body + '</tbody></table>';
+  bindScheduleSwipe();
+}
+
+// Vuốt ngang để đổi ngày trên điện thoại
+let SCHED_SWIPE_BOUND = false;
+function bindScheduleSwipe() {
+  if (SCHED_SWIPE_BOUND) return;
+  SCHED_SWIPE_BOUND = true;
+  const el = $('schedGridWrap');
+  let sx = null, sy = null;
+  el.addEventListener('touchstart', function(e){ sx = e.touches[0].clientX; sy = e.touches[0].clientY; }, { passive: true });
+  el.addEventListener('touchend', function(e){
+    if (sx === null || !window.matchMedia('(max-width:700px)').matches) return;
+    const dx = e.changedTouches[0].clientX - sx;
+    const dy = e.changedTouches[0].clientY - sy;
+    sx = null;
+    if (Math.abs(dx) > 50 && Math.abs(dx) > Math.abs(dy)) setScheduleDay(SCHED_DAY + (dx < 0 ? 1 : -1));
+  });
+}
+
+function runScheduleToolUi(name, arg) {
+  closeScheduleTools();
+  const label = SCHEDULE_TOOL_LABELS[name] || name;
+  if (name === 'xoaLichDayLinhTuanNay' && !confirm('⚠️ Xoá toàn bộ sự kiện lịch dạy GV Linh TUẦN NÀY trên Google Calendar?\nThao tác không thể hoàn tác.')) return;
+  if (name.indexOf('taoDanhSach') === 0 && !confirm(label + '?\nSự kiện sẽ được tạo trên Google Calendar theo sheet XẾP LỊCH.')) return;
+  toast('⏳ Đang chạy: ' + label + '...');
+  google.script.run
+    .withSuccessHandler(function(res){
+      if (!res || !res.success) { showScheduleResult('⚠️ ' + label, res ? res.message : 'Có lỗi xảy ra'); return; }
+      if (res.result) showScheduleResult(label, res.result);
+      else if (name.indexOf('tongHop') === 0) showScheduleResult(label, res.message + '\n\nHàm không trả về nội dung — kết quả (nếu có) đã được ghi vào Google Sheets.');
+      else toast('✅ ' + res.message);
+    })
+    .withFailureHandler(function(err){ showScheduleResult('❌ ' + label, err ? err.message : 'Lỗi kết nối'); })
+    .runScheduleTool(name, arg || '');
+}
+
+function showScheduleResult(title, text) {
+  $('sr_title').textContent = title;
+  $('sr_body').textContent = text || '—';
+  open_('mScheduleResult');
+}
+
+function copyScheduleResult() {
+  const text = $('sr_body').textContent;
+  navigator.clipboard.writeText(text).then(function(){ toast('📋 Đã copy'); }).catch(function(){ prompt('Copy nội dung:', text); });
+}
+
+function openOtherGvScheduleModal() {
+  closeScheduleTools();
+  const gvs = [];
+  ALL_STUDENTS.forEach(function(s){
+    const g = String(s.giaoVien || '').trim();
+    if (g && normName(g) !== 'linh' && gvs.indexOf(g) === -1) gvs.push(g);
+  });
+  if (gvs.indexOf('Quân') === -1) gvs.unshift('Quân');
+  renderChips('sog_gvChips', [{ v: '', l: 'Tất cả GV khác' }].concat(gvs), '');
+  renderChips('sog_weekChips', [{ v: 'next', l: 'Tuần sau' }, { v: 'this', l: 'Tuần này' }], 'next');
+  open_('mScheduleOtherGv');
+}
+
+function confirmOtherGvSchedule() {
+  const week = getChipValue('sog_weekChips') || 'next';
+  const gv = getChipValue('sog_gvChips');
+  close_('mScheduleOtherGv');
+  runScheduleToolUi(week === 'this' ? 'taoDanhSachLichDayconlaiTuanNay' : 'taoDanhSachLichDayconlai', gv);
+}
+
+// ==================== KHỞI CHẠY (INIT) ====================
+google.script.run.withSuccessHandler(function(url){
+  if (url) $('dbLink').innerHTML = '<a href="' + url + '" target="_blank">📊 Google Sheet DB</a>';
+}).getDbUrl();
+
+window.addEventListener('keydown', function(e){
+  if (e.key === 'F5' || (e.ctrlKey && e.key === 'r')) {
+    loadDashboard();
+    loadStudents();
+  }
+});
+
+document.addEventListener('click', function(){ closeScheduleTools(); });
+
+switchStudentView(CURRENT_VIEW_MODE);
+loadAppConfig();
+loadUsers();
+loadDashboard();
+</script>

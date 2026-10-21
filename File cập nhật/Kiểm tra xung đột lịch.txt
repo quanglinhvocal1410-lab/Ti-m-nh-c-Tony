@@ -1,0 +1,85 @@
+function onEdit(e) {
+  if (!e) return;
+  var sheet = e.source.getActiveSheet();
+  
+  if (sheet.getName() !== "XẾP LỊCH") return;
+
+  var range = e.range;
+  var col = range.getColumn();
+  var row = range.getRow();
+
+  // Khống chế phạm vi thực thi: Cột 3 (Thứ 2) đến 9 (Chủ nhật), Dòng 3 đến 21
+  if (col < 3 || col > 9 || row < 3 || row > 21) return;
+
+  var dataRange = sheet.getRange(3, 2, 19, 8); 
+  var data = dataRange.getValues();
+
+  // Khôi phục nền mặc định trước khi tính toán lại
+  sheet.getRange(3, col, 19, 1).setBackground(null);
+
+  var isCurrentEditConflict = false;
+  var conflictDetails = "";
+  
+  // Kiểm tra dữ liệu ô vừa nhập có chứa từ "trống" không
+  var editedValue = e.value ? e.value.toString().toLowerCase() : "";
+  var isEditedTrong = editedValue.indexOf("trống") !== -1;
+
+  for (var i = 0; i < data.length; i++) {
+    var time1 = parseTime(data[i][0]);
+    if (!time1) continue;
+
+    var isBlocked = false;
+    var currentCellValue = data[i][col - 2] ? data[i][col - 2].toString() : "";
+    var isCurrentTrong = currentCellValue.toLowerCase().indexOf("trống") !== -1;
+
+    for (var j = 0; j < data.length; j++) {
+      if (i === j) continue; 
+
+      var compareCellValue = data[j][col - 2] ? data[j][col - 2].toString() : "";
+      if (!compareCellValue) continue; 
+      
+      // Bỏ qua đánh giá xung đột nếu lịch đem đi so sánh là lịch "trống"
+      if (compareCellValue.toLowerCase().indexOf("trống") !== -1) continue;
+
+      var time2 = parseTime(data[j][0]);
+      if (!time2) continue;
+
+      if (time1.start < time2.end && time1.end > time2.start) {
+        isBlocked = true;
+        
+        // Nếu dòng đang xét chính là dòng vừa nhập liệu và không phải điền "trống"
+        if ((i + 3) === row && currentCellValue !== "" && !isCurrentTrong) {
+          isCurrentEditConflict = true;
+          if (conflictDetails.indexOf(data[j][0]) === -1) {
+            conflictDetails += "- Trùng với lịch: " + data[j][0] + " (Học viên: " + compareCellValue + ")\n";
+          }
+        }
+        break;
+      }
+    }
+
+    // Không tô màu nếu ô đang xét có chứa từ "trống"
+    if (isBlocked && !isCurrentTrong) {
+      sheet.getRange(i + 3, col).setBackground("#ea4335"); 
+    }
+  }
+
+  // Kích hoạt hộp thoại cảnh báo nếu thao tác vừa nhập gây ra xung đột và không phải là nhập từ "trống"
+  if (isCurrentEditConflict && e.value && !isEditedTrong) {
+    var ui = SpreadsheetApp.getUi();
+    ui.alert(
+      "LỆNH BỊ TRÙNG VÀ XUNG ĐỘT GIỜ",
+      "Thông tin chi tiết:\n" + conflictDetails + "\nYêu cầu xóa hoặc di chuyển lịch vừa xếp.",
+      ui.ButtonSet.OK
+    );
+  }
+}
+
+function parseTime(timeStr) {
+  if (!timeStr) return null;
+  var parts = timeStr.toString().toLowerCase().split("-");
+  if (parts.length !== 2) return null;
+  var start = parseFloat(parts[0].replace('h', '.').replace('30', '5'));
+  var end = parseFloat(parts[1].replace('h', '.').replace('30', '5'));
+  return { start: start, end: end };
+}

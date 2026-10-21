@@ -1,0 +1,295 @@
+function taoDanhSachLichDayconlai() {
+  var sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName("XẾP LỊCH");
+  if (!sheet) {
+    SpreadsheetApp.getUi().alert("Lỗi", "Không tìm thấy trang tính 'XẾP LỊCH'.", SpreadsheetApp.getUi().ButtonSet.OK);
+    return;
+  }
+
+  // 1. Quét vùng J3:N50 để ánh xạ Học viên - Giáo viên
+  var mappingValues = sheet.getRange("J3:N50").getValues();
+  var studentTeacherMap = {};
+  var teacherNames = []; 
+
+  for (var r = 0; r < mappingValues.length; r++) {
+    var row = mappingValues[r];
+    var studentName = row[0] ? row[0].toString().trim().toLowerCase() : "";
+    var teacherName = row[4] ? row[4].toString().trim() : ""; 
+    var teacherNameLower = teacherName.toLowerCase();
+
+    // Bỏ qua nếu dòng rỗng hoặc giáo viên là Linh (Admin)
+    if (studentName !== "" && teacherName !== "" && teacherNameLower !== "linh") {
+      studentTeacherMap[studentName] = teacherName;
+      if (teacherNames.indexOf(teacherName) === -1) {
+        teacherNames.push(teacherName);
+      }
+    }
+  }
+
+  // 2. Quét lịch từ B2:I21 và phân loại theo giáo viên
+  var range = sheet.getRange("B2:I21");
+  var values = range.getValues();
+
+  var days = values[0];
+  var timeRows = values.slice(1);
+  var dayNames = ["Thứ 2", "Thứ 3", "Thứ 4", "Thứ 5", "Thứ 6", "Thứ 7", "Chủ nhật"];
+
+  var scheduleByTeacher = {};
+  teacherNames.forEach(function(t) {
+    scheduleByTeacher[t] = {};
+    dayNames.forEach(function(d) {
+      scheduleByTeacher[t][d] = [];
+    });
+  });
+
+  for (var i = 0; i < timeRows.length; i++) {
+    var time = timeRows[i][0] ? timeRows[i][0].toString().trim() : "";
+    if (time === "") continue;
+
+    for (var j = 1; j < 8; j++) {
+      var cellValue = timeRows[i][j] ? timeRows[i][j].toString().trim() : "";
+      var day = days[j] ? days[j].toString().trim() : "";
+
+      if (cellValue !== "" && cellValue !== "-" && cellValue.toLowerCase().indexOf("trống") === -1) {
+        var cellLower = cellValue.toLowerCase();
+        var namesInCell = cellLower.split("+");
+        var addedTeachersForThisCell = [];
+
+        for (var n = 0; n < namesInCell.length; n++) {
+          var singleName = namesInCell[n].trim();
+          
+          if (studentTeacherMap[singleName]) {
+            var teacher = studentTeacherMap[singleName];
+            if (addedTeachersForThisCell.indexOf(teacher) === -1) {
+              scheduleByTeacher[teacher][day].push({
+                time: time,
+                student: cellValue
+              });
+              addedTeachersForThisCell.push(teacher);
+            }
+          }
+        }
+      }
+    }
+  }
+
+  // Lọc danh sách các giáo viên thực sự CÓ lịch dạy
+  var activeTeachers = [];
+  teacherNames.forEach(function(teacher) {
+    var teacherHasClasses = false;
+    dayNames.forEach(function(day) {
+      if (scheduleByTeacher[teacher][day].length > 0) {
+        teacherHasClasses = true;
+      }
+    });
+    if (teacherHasClasses) {
+      activeTeachers.push(teacher);
+    }
+  });
+
+  var ui = SpreadsheetApp.getUi();
+
+  if (activeTeachers.length === 0) {
+    ui.alert("Thông báo", "Không có lịch dạy nào cho các giáo viên khác trong tuần sau.", ui.ButtonSet.OK);
+    return;
+  }
+
+  // Lưu tạm dữ liệu lịch để chức năng UI xử lý
+  CacheService.getUserCache().put('TEMP_SCHEDULE_OTHER_TEACHERS', JSON.stringify(scheduleByTeacher), 600);
+
+  // Khởi tạo nội dung bảng giáo viên bằng HTML
+  var tbodyHtml = "";
+  var userProps = PropertiesService.getUserProperties();
+
+  activeTeachers.forEach(function(t) {
+    var savedEmail = userProps.getProperty('TEACHER_EMAIL_' + t) || "";
+    tbodyHtml += "<tr>";
+    tbodyHtml += "<td class='center'><input type='checkbox' value='" + t + "' checked></td>";
+    tbodyHtml += "<td><strong>" + t + "</strong></td>";
+    tbodyHtml += "<td><input type='text' id='email_" + t + "' value='" + savedEmail + "' placeholder='Nhập Gmail nhận lịch...'></td>";
+    tbodyHtml += "</tr>";
+  });
+
+  var htmlString = `
+    <!DOCTYPE html>
+    <html>
+    <head>
+      <base target="_top">
+      <style>
+        body { font-family: Arial, sans-serif; margin: 15px; font-size: 14px; color: #333; }
+        table { width: 100%; border-collapse: collapse; margin-bottom: 20px; }
+        th, td { border: 1px solid #ddd; padding: 10px; text-align: left; }
+        th { background-color: #f8f9fa; }
+        input[type="text"] { width: 95%; padding: 6px; box-sizing: border-box; border: 1px solid #ccc; border-radius: 4px; }
+        .btn-container { text-align: right; border-top: 1px solid #ddd; padding-top: 15px; }
+        button { padding: 9px 18px; background-color: #0d6efd; color: white; border: none; cursor: pointer; border-radius: 4px; font-weight: bold; }
+        button:hover { background-color: #0b5ed7; }
+        button:disabled { background-color: #cccccc; cursor: not-allowed; }
+        #status { margin-top: 15px; font-weight: bold; color: #d9534f; text-align: right; }
+        .center { text-align: center; }
+        .note { font-size: 13px; color: #555; margin-bottom: 15px; }
+      </style>
+    </head>
+    <body>
+      <div class="note">Đánh dấu vào các giáo viên cần tạo lịch (lịch sẽ được tạo cho TUẦN SAU) và kiểm tra địa chỉ Gmail. Hệ thống sẽ tự động lưu Gmail cho lần thao tác sau.</div>
+      <form id="gvForm">
+        <table>
+          <thead>
+            <tr>
+              <th class="center" style="width: 50px;">Chọn</th>
+              <th style="width: 130px;">Giáo viên</th>
+              <th>Tài khoản Gmail</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${tbodyHtml}
+          </tbody>
+        </table>
+        <div class="btn-container">
+          <button type="button" id="submitBtn" onclick="processForm()">Thêm lịch đã chọn</button>
+        </div>
+        <div id="status"></div>
+      </form>
+
+      <script>
+        function processForm() {
+          document.getElementById('status').innerText = 'Hệ thống đang đồng bộ dữ liệu vào tuần sau, vui lòng không đóng bảng...';
+          document.getElementById('submitBtn').disabled = true;
+
+          var form = document.getElementById('gvForm');
+          var rows = form.querySelectorAll('tbody tr');
+          var selectionData = [];
+
+          rows.forEach(function(row) {
+            var checkbox = row.querySelector('input[type="checkbox"]');
+            if (checkbox.checked) {
+              var teacherName = checkbox.value;
+              var emailInput = row.querySelector('input[type="text"]').value.trim();
+              selectionData.push({ name: teacherName, email: emailInput });
+            }
+          });
+
+          if (selectionData.length === 0) {
+            alert('Lỗi: Vui lòng chọn ít nhất 1 giáo viên để tiến hành.');
+            document.getElementById('status').innerText = '';
+            document.getElementById('submitBtn').disabled = false;
+            return;
+          }
+
+          google.script.run
+            .withSuccessHandler(function(response) {
+              alert(response.message);
+              if (response.success) {
+                google.script.host.close();
+              } else {
+                document.getElementById('status').innerText = '';
+                document.getElementById('submitBtn').disabled = false;
+              }
+            })
+            .withFailureHandler(function(error) {
+              alert('Lỗi hệ thống Apps Script: ' + error.message);
+              document.getElementById('status').innerText = '';
+              document.getElementById('submitBtn').disabled = false;
+            })
+            .xuLyThemLichGiaoVienTuUI(selectionData);
+        }
+      </script>
+    </body>
+    </html>
+  `;
+
+  var htmlOutput = HtmlService.createHtmlOutput(htmlString)
+    .setWidth(600)
+    .setHeight(450);
+  ui.showModalDialog(htmlOutput, 'BẢNG QUẢN LÝ LỊCH TUẦN SAU VÀ GMAIL GIÁO VIÊN');
+}
+
+/**
+ * Hàm xử lý phía máy chủ, được gọi từ giao diện HTML Modal Dialog
+ */
+function xuLyThemLichGiaoVienTuUI(selectionData) {
+  var cache = CacheService.getUserCache().get('TEMP_SCHEDULE_OTHER_TEACHERS');
+  if (!cache) {
+    return { success: false, message: "Dữ liệu phiên làm việc đã hết hạn. Vui lòng tắt bảng này và chạy lại công cụ xếp lịch." };
+  }
+
+  var scheduleByTeacher = JSON.parse(cache);
+  var userProps = PropertiesService.getUserProperties();
+  var calendar = CalendarApp.getDefaultCalendar();
+  var errorLogs = [];
+
+  var today = new Date();
+  var currentDay = today.getDay();
+  
+  // Tính toán số ngày cần cộng thêm để đến Thứ 2 của TUẦN TIẾP THEO
+  var daysUntilNextMonday = (currentDay === 0) ? 1 : (8 - currentDay);
+  
+  var mondayDate = new Date(today);
+  mondayDate.setDate(today.getDate() + daysUntilNextMonday);
+  
+  var dayNames = ["Thứ 2", "Thứ 3", "Thứ 4", "Thứ 5", "Thứ 6", "Thứ 7", "Chủ nhật"];
+
+  selectionData.forEach(function(data) {
+    var teacher = data.name;
+    var email = data.email;
+
+    // Lưu Gmail vào thuộc tính hệ thống
+    if (email !== "") {
+      userProps.setProperty('TEACHER_EMAIL_' + teacher, email);
+    } else {
+      userProps.deleteProperty('TEACHER_EMAIL_' + teacher);
+    }
+
+    if (scheduleByTeacher[teacher]) {
+      dayNames.forEach(function(day, index) {
+        if (scheduleByTeacher[teacher][day].length > 0) {
+          var targetDate = new Date(mondayDate);
+          targetDate.setDate(mondayDate.getDate() + index);
+
+          scheduleByTeacher[teacher][day].forEach(function(item) {
+            try {
+              var timeParts = item.time.split("-");
+              if (timeParts.length === 2) {
+                var startStr = timeParts[0].trim().toLowerCase().replace("h", ":");
+                var endStr = timeParts[1].trim().toLowerCase().replace("h", ":");
+
+                var startHM = startStr.split(":");
+                var endHM = endStr.split(":");
+
+                var startHour = parseInt(startHM[0], 10) || 0;
+                var startMinute = parseInt(startHM[1], 10) || 0;
+                var endHour = parseInt(endHM[0], 10) || 0;
+                var endMinute = parseInt(endHM[1], 10) || 0;
+
+                var startTime = new Date(targetDate);
+                startTime.setHours(startHour, startMinute, 0, 0);
+
+                var endTime = new Date(targetDate);
+                endTime.setHours(endHour, endMinute, 0, 0);
+
+                if (endTime <= startTime) {
+                  errorLogs.push("Thời gian lỗi (GV " + teacher + "): " + item.student + " (" + item.time + ")");
+                  return;
+                }
+
+                var eventTitle = "Lịch dạy " + teacher + ": " + item.student;
+                var event = calendar.createEvent(eventTitle, startTime, endTime);
+
+                if (email !== "" && email.indexOf("@") !== -1) {
+                  event.addGuest(email);
+                }
+              }
+            } catch (e) {
+              errorLogs.push("Lỗi tạo lịch GV " + teacher + ": " + item.student + " - " + e.toString());
+            }
+          });
+        }
+      });
+    }
+  });
+
+  if (errorLogs.length > 0) {
+    return { success: true, message: "Tiến trình hoàn tất nhưng có phát sinh lỗi cục bộ:\n\n" + errorLogs.join("\n") };
+  } else {
+    return { success: true, message: "Hệ thống đã đồng bộ thành công toàn bộ lịch cho tuần sau lên Google Calendar của các giáo viên." };
+  }
+}
